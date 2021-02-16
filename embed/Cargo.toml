@@ -1,0 +1,12 @@
+[package]
+name = "choosy_embed"
+version = "0.1.0"
+authors = ["Tommi Virtanen <tv@eagain.net>"]
+edition = "2018"
+
+[dependencies]
+async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
+
+[build-dependencies]
+anyhow = "1.0.38"
+cargo_metadata = "0.12.3"
