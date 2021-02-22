@@ -99,7 +99,7 @@ async fn debug_add_file(mut req: Request<Arc<State>>) -> tide::Result {
     let state = req.state();
     state
         .files
-        .update(vec![proto::FileChange::Add { name: body }].iter())
+        .update(vec![proto::FileChange::Add { name: body }].into_iter())
         .await;
     let resp = Response::new(StatusCode::Ok);
     Ok(resp)
@@ -129,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                     name: "bar".to_string(),
                 },
             ]
-            .iter(),
+            .into_iter(),
         )
         .await;
 

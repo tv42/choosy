@@ -32,13 +32,13 @@ impl List {
         }
     }
 
-    pub async fn update(&self, changes: impl Iterator<Item = &proto::FileChange>) {
+    pub async fn update(&self, changes: impl Iterator<Item = proto::FileChange>) {
         let mut files = self.files.lock().await;
         let prev = files.clone();
         for change in changes {
             match change {
                 proto::FileChange::Add { name } => files.insert(name.to_string(), File {}),
-                proto::FileChange::Del { name } => files.remove(name),
+                proto::FileChange::Del { name } => files.remove(&name),
             };
         }
         if *files != prev {
