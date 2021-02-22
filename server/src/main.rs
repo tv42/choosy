@@ -57,9 +57,13 @@ async fn index_html(_req: Request<Arc<State>>) -> tide::Result {
 async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
     let mut stream = state.files.change_batches();
     loop {
-        let batch = stream.next().await;
-        for item in batch {
-            conn.send_json(&proto::WSEvent::FileChange(item)).await?;
+        let mut changes = stream.next().await;
+        loop {
+            let batch: Vec<proto::FileChange> = changes.by_ref().take(1000).collect();
+            if batch.is_empty() {
+                break;
+            }
+            conn.send_json(&proto::WSEvent::FileChange(batch)).await?;
         }
     }
 }

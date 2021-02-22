@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum WSEvent {
-    FileChange(FileChange),
+    FileChange(Vec<FileChange>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
