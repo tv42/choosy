@@ -37,8 +37,15 @@ impl List {
         let prev = files.clone();
         for change in changes {
             match change {
-                proto::FileChange::Add { name } => files.insert(name.to_string(), File {}),
-                proto::FileChange::Del { name } => files.remove(&name),
+                proto::FileChange::ClearAll => {
+                    files.clear();
+                }
+                proto::FileChange::Add { name } => {
+                    files.insert(name.to_string(), File {});
+                }
+                proto::FileChange::Del { name } => {
+                    files.remove(&name);
+                }
             };
         }
         if *files != prev {

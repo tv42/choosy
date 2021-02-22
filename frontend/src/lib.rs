@@ -72,12 +72,17 @@ impl Component for Model {
             Msg::FromServer(msg) => {
                 yew::services::ConsoleService::info(&format!("server says: {:?}", msg));
                 match msg {
-                    proto::WSEvent::FileChange(change) => {
-                        match change {
-                            proto::FileChange::Add { name } => self.files.insert(name, ()),
-                            proto::FileChange::Del { name } => self.files.remove(&name),
-                        };
-                    }
+                    proto::WSEvent::FileChange(change) => match change {
+                        proto::FileChange::ClearAll => {
+                            self.files.clear();
+                        }
+                        proto::FileChange::Add { name } => {
+                            self.files.insert(name, ());
+                        }
+                        proto::FileChange::Del { name } => {
+                            self.files.remove(&name);
+                        }
+                    },
                 };
             }
         }

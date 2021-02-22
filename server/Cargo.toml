@@ -15,3 +15,4 @@ scopeguard = "1.1.0"
 serde = { version = "1.0", features = ["derive"] }
 tide = "0.16.0"
 tide-websockets = "0.2.0"
+walkdir = "2.3.1"

@@ -9,6 +9,7 @@ pub enum WSEvent {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum FileChange {
+    ClearAll,
     Add { name: String },
     Del { name: String },
 }

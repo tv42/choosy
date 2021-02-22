@@ -7,6 +7,8 @@ use choosy_embed;
 use choosy_protocol as proto;
 use http_types::mime;
 use scopeguard;
+use std::path::Path;
+use std::time::Duration;
 use tide::log;
 #[allow(unused_imports)]
 use tide::prelude::*;
@@ -21,6 +23,7 @@ mod ws {
 }
 
 mod file_list;
+mod file_scanner;
 
 #[derive(Clone, PartialEq)]
 struct File {}
@@ -115,23 +118,24 @@ async fn main() -> anyhow::Result<()> {
         files: file_list::List::new(),
     });
 
-    state
-        .files
-        .update(
-            vec![
-                proto::FileChange::Add {
-                    name: "foo".to_string(),
-                },
-                proto::FileChange::Add {
-                    name: "quux".to_string(),
-                },
-                proto::FileChange::Add {
-                    name: "bar".to_string(),
-                },
-            ]
-            .into_iter(),
-        )
-        .await;
+    let _file_scanner = task::spawn({
+        let state = state.clone();
+        async move {
+            // i tried to delegate this loop to mod file_scanner, but passing in an async trait-using callback function as an argument was just too obscure.
+
+            // this is task that often blocks, but we rely on async_std to spawn new async execution threads when needed
+            loop {
+                // TODO take path from config
+                let path = Path::new(".");
+                let clear = std::iter::once(proto::FileChange::ClearAll);
+                let found = file_scanner::scan(path);
+                let changes = clear.chain(found);
+                state.files.update(changes).await;
+                // TODO relax this timing once everything stabilizies, and especially if and when notifications are used for low latency reactions.
+                task::sleep(Duration::from_secs(60)).await;
+            }
+        }
+    });
 
     let mut app = tide::with_state(state);
     app.at("/choosy_frontend_bg.wasm").get(wasm_bg);
