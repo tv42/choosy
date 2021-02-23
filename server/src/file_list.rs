@@ -80,26 +80,31 @@ impl<'a> ChangeBatches<'a> {
             }
             lock.clone()
         };
-        let diffs = self
-            .prev
-            .diff(&files)
-            .filter_map(|diff| match diff {
-                ordmap::DiffItem::Add(name, _file) => Some(proto::FileChange::Add {
-                    name: name.to_string(),
-                }),
-                ordmap::DiffItem::Update {
-                    old: (_old_name, _old_file),
-                    new: (_new_name, _new_file),
-                } => {
-                    // TODO send file value info to client
-                    None
-                }
-                ordmap::DiffItem::Remove(name, _file) => Some(proto::FileChange::Del {
-                    name: name.to_string(),
-                }),
-            })
-            // I've spent too much time fighting the borrow checker here. Doing `prev.diff(&files)` here leaves the diff forever borrowing `files`, and cloning didn't help because then it just borrowed that temporary value! And returning it in the iterator makes it live past this function call. And even ordmap::DiffIter holds references. Punt and collect in-memory; the whole list is in memory anyway.
-            .collect::<VecDeque<proto::FileChange>>();
+
+        let changes = self.prev.diff(&files).filter_map(|diff| match diff {
+            ordmap::DiffItem::Add(name, _file) => Some(proto::FileChange::Add {
+                name: name.to_string(),
+            }),
+            ordmap::DiffItem::Update {
+                old: (_old_name, _old_file),
+                new: (_new_name, _new_file),
+            } => {
+                // TODO send file value info to client
+                None
+            }
+            ordmap::DiffItem::Remove(name, _file) => Some(proto::FileChange::Del {
+                name: name.to_string(),
+            }),
+        });
+
+        // We want to insert a ClearAll at front when starting a new stream, so the first change batch takes out all potentially stale state. (The web client batching that into 1000 items at a time slightly ruins that, but we can fix that later if needed.) Instead of explicitly tracking the first call, just add a ClearAll whenever prev is empty; the extra clears won't change any correct behavior and an empty file list should be extremely rare except when starting to stream.
+        //
+        // Rust type system kept fighting me when I tried to have match arms returning iter::once and iter::empty, so use filter instead.
+        let clear = std::iter::once(proto::FileChange::ClearAll).filter(|_| self.prev.is_empty());
+        let changes = clear.chain(changes);
+
+        // I've spent too much time fighting the borrow checker here. Doing `prev.diff(&files)` here leaves the diff forever borrowing `files`, and cloning didn't help because then it just borrowed that temporary value! And returning it in the iterator makes it live past this function call. And even ordmap::DiffIter holds references. Punt and collect in-memory; the whole list is in memory anyway.
+        let diffs = changes.collect::<VecDeque<proto::FileChange>>();
 
         self.prev = files;
 
