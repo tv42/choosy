@@ -519,6 +519,8 @@ dependencies = [
  "anyhow",
  "choosy_protocol",
  "console_error_panic_hook",
+ "gloo",
+ "js-sys",
  "serde",
  "wasm-bindgen",
  "yew",

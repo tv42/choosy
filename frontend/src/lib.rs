@@ -5,15 +5,18 @@ use anyhow;
 use choosy_protocol as proto;
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
-use yew;
+use websocket::WebSocketStatus;
 use yew::callback::Callback;
 use yew::format::Json;
 use yew::prelude::*;
 use yew::services::websocket;
 
+mod backoff;
+
 struct Model {
     link: ComponentLink<Self>,
-    _ws: websocket::WebSocketTask,
+    ws: Option<websocket::WebSocketTask>,
+    ws_backoff: backoff::Backoff,
     search: String,
     files: BTreeMap<String, ()>,
 }
@@ -22,37 +25,19 @@ enum Msg {
     UpdateSearch { s: String },
     ServerError(anyhow::Error),
     FromServer(proto::WSEvent),
-}
-
-fn ws_notification(status: websocket::WebSocketStatus) {
-    // TODO
-    yew::services::ConsoleService::info(&format!("ws status: {:?}", status));
+    WebSocketStatus(WebSocketStatus),
+    ConnectWebSocket,
 }
 
 impl Component for Model {
     type Message = Msg;
     type Properties = ();
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
-        let host = yew::utils::host().unwrap();
-        let url = format!("ws://{}/ws", host);
-
-        let ws_msg = link.callback(|text: yew::format::Text| {
-            let Json(result) = Json::from(text);
-            match result {
-                Ok(data) => Msg::FromServer(data),
-                Err(error) => Msg::ServerError(error),
-            }
-        });
-
-        let ws = websocket::WebSocketService::connect_text(
-            &url,
-            ws_msg,
-            Callback::from(ws_notification),
-        )
-        .unwrap();
+        link.send_message(Msg::ConnectWebSocket);
         Self {
             link,
-            _ws: ws,
+            ws: None,
+            ws_backoff: backoff::Backoff::new(),
             search: "".to_string(),
             files: BTreeMap::new(),
         }
@@ -88,6 +73,59 @@ impl Component for Model {
                     }
                 };
             }
+            Msg::WebSocketStatus(status) => {
+                yew::services::ConsoleService::info(&format!("ws status: {:?}", status));
+                match status {
+                    WebSocketStatus::Opened => {
+                        self.ws_backoff.success();
+                    }
+                    WebSocketStatus::Closed | WebSocketStatus::Error => {
+                        self.ws = None;
+
+                        // trigger a reconnect, after a delay
+                        let delay = self.ws_backoff.delay();
+                        yew::services::ConsoleService::info(&format!(
+                            "WebSocket connection {:?}, retrying in {:?}...",
+                            status, delay,
+                        ));
+                        let callback = self.link.callback(|_| Msg::ConnectWebSocket);
+
+                        // Yew TimeoutService has a weird API where the timer is cancelled if you drop the returned task, and it provides no way to avoid that. Just assume web-sys and go directly to the underlying, slightly saner, API.
+                        use gloo::timers::callback::Timeout;
+                        let js_callback = move || {
+                            callback.emit(());
+                        };
+                        let timeout = Timeout::new(delay.as_millis() as u32, js_callback);
+                        timeout.forget();
+                    }
+                }
+            }
+            Msg::ConnectWebSocket => match self.ws {
+                Some(_) => {
+                    yew::services::ConsoleService::info(
+                        "asked to connect websocket, but it's already connected",
+                    );
+                }
+                None => {
+                    let ws_msg = self.link.callback(|text: yew::format::Text| {
+                        let Json(result) = Json::from(text);
+                        match result {
+                            Ok(data) => Msg::FromServer(data),
+                            Err(error) => Msg::ServerError(error),
+                        }
+                    });
+                    let ws_status = self.link.callback(|status| Msg::WebSocketStatus(status));
+                    let host = yew::utils::host().unwrap();
+                    let url = format!("ws://{}/ws", host);
+                    let ws = websocket::WebSocketService::connect_text(
+                        &url,
+                        ws_msg,
+                        Callback::from(ws_status),
+                    )
+                    .unwrap();
+                    self.ws = Some(ws);
+                }
+            },
         }
         true
     }
