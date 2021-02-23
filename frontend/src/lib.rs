@@ -100,6 +100,12 @@ impl Component for Model {
     }
 
     fn view(&self) -> Html {
+        let entries = self
+            .files
+            .iter()
+            .filter(|(name, _)| name.contains(&self.search))
+            // TODO relax this once the web UI agrees to be responsive enough
+            .take(1000);
         html! {
             <>
                 <input
@@ -109,7 +115,7 @@ impl Component for Model {
                     style="width: 100%;"
                 />
                 <ul>
-                    { for self.files.iter().filter(|(name, _)| name.contains(&self.search)).map(|(name,_)| html!{<li>{ name }</li>}) }
+                    { for entries.map(|(name,_)| html!{<li>{ name }</li>}) }
                 </ul>
             </>
         }
