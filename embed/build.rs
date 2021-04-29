@@ -41,6 +41,20 @@ fn cargo_build_frontend() -> Result<(), anyhow::Error> {
             "--release",
             "-v",
             "--target=wasm32-unknown-unknown",
+            // using the same target directory would deadlock on
+            // flocking target/release/.cargo-lock which is held by
+            // the parent `cargo build --release`.
+            //
+            // (non-release builds work because the wasm is always in
+            // release mode).
+            //
+            // avoid this by giving the frontend build its own target
+            // directory. this means any building done directly via
+            // `cargo -p frontend` duplicates effort & caching -- but
+            // those builds would likely not target wasm anyway.
+            //
+            // https://github.com/rust-lang/cargo/issues/6412#issuecomment-539976015
+            "--target-dir=./target",
         ])
         .current_dir(DIR)
         .stdin(Stdio::null())
@@ -140,7 +154,7 @@ fn main() -> Result<(), anyhow::Error> {
             &wasm_out,
             "--no-typescript",
             "--target=web",
-            "../target/wasm32-unknown-unknown/release/choosy_frontend.wasm",
+            "../frontend/target/wasm32-unknown-unknown/release/choosy_frontend.wasm",
         ])
         .stdin(Stdio::null())
         .status()?;
