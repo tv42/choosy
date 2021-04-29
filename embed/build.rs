@@ -68,10 +68,7 @@ fn cargo_build_frontend() -> Result<(), anyhow::Error> {
 // wasm-bindgen demands that the executable and the library
 // used have matching versions.
 fn get_wasm_bindgen_version() -> String {
-    let options: Vec<String> = ["--locked", "--offline"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let options: Vec<String> = ["--locked"].iter().map(|s| s.to_string()).collect();
     let metadata = MetadataCommand::new()
         .manifest_path("../frontend/Cargo.toml")
         .other_options(options)
