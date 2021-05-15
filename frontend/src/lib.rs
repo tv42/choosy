@@ -148,7 +148,12 @@ impl Component for Model {
             <>
                 <input
                     placeholder="Search"
-                    value=&self.search
+                    // WAITING store self.search as Rc<str> to avoid
+                    // copying string contents on every view, needs
+                    // yew support
+                    //
+                    // https://github.com/yewstack/yew/issues/1851
+                    value=self.search.clone()
                     oninput=self.link.callback(|e: yew::InputData| Msg::UpdateSearch{s: e.value})
                     style="width: 100%;"
                 />

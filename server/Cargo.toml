@@ -5,14 +5,14 @@ authors = ["Tommi Virtanen <tv@eagain.net>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.38"
+anyhow = "1.0.40"
 async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
 choosy_embed = { path = "../embed" }
 choosy_protocol = { path = "../protocol" }
-http-types = "2.10.0"
+http-types = "2.11.1"
 im = "15.0.0"
 scopeguard = "1.1.0"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.126", features = ["derive"] }
 tide = "0.16.0"
-tide-websockets = "0.2.0"
-walkdir = "2.3.1"
+tide-websockets = "0.3.0"
+walkdir = "2.3.2"
