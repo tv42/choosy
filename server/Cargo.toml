@@ -9,6 +9,7 @@ anyhow = "1.0.40"
 async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
 choosy_embed = { path = "../embed" }
 choosy_protocol = { path = "../protocol" }
+mpv_remote = { path = "../mpv_remote" }
 http-types = "2.11.1"
 im = "15.0.0"
 scopeguard = "1.1.0"

@@ -1,0 +1,21 @@
+[package]
+name = "mpv_remote"
+version = "0.1.0"
+authors = ["Tommi Virtanen <tv@eagain.net>"]
+edition = "2018"
+
+[dependencies]
+async-broadcast = "0.2.0"
+async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
+futures-channel = "0.3.15"
+kv-log-macro = "1.0.7"
+libc = "0.2.94"
+log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }
+serde = { version = "1.0.126", features = ["derive"] }
+serde_json = { version = "1.0.64", features = ["raw_value"] }
+slab = "0.4.3"
+thiserror = "1.0.24"
+
+[dev-dependencies]
+anyhow = "1.0.40"
+femme = "2.1.1"

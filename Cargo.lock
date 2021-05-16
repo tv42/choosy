@@ -91,6 +91,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-broadcast"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df4e44cf7a802b83be541c6de09471b6bb205acdb77bf8b89f4fadf4cd5b225d"
+dependencies = [
+ "easy-parallel",
+ "event-listener",
+ "futures-core",
+]
+
+[[package]]
 name = "async-channel"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -506,6 +517,7 @@ dependencies = [
  "choosy_protocol",
  "http-types",
  "im",
+ "mpv_remote",
  "scopeguard",
  "serde",
  "tide",
@@ -719,6 +731,12 @@ name = "discard"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "212d0f5754cb6769937f4501cc0e67f4f4483c8d2c3e1e922ee9edbe4ab4c7c0"
+
+[[package]]
+name = "easy-parallel"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dd4afd79212583ff429b913ad6605242ed7eec277e950b1438f300748f948f4"
 
 [[package]]
 name = "event-listener"
@@ -1157,6 +1175,24 @@ name = "memchr"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b16bd47d9e329435e309c58469fe0791c2d0d1ba96ec0954152a5ae2b04387dc"
+
+[[package]]
+name = "mpv_remote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-broadcast",
+ "async-std",
+ "femme",
+ "futures-channel",
+ "kv-log-macro",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "slab",
+ "thiserror",
+]
 
 [[package]]
 name = "num-integer"
