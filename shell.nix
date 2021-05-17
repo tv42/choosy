@@ -37,7 +37,6 @@ stdenv.mkDerivation {
     rustfmt
     rustPackages.clippy
     cargo-edit
-    systemfd
     cargo-watch
     ws
 
