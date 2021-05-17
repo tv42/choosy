@@ -15,6 +15,18 @@ let
     cargo = rustc;
     rustc = rustc;
   };
+
+  # mpv v0.33 needed for --input-ipc-client, which is not in
+  # nixos-20.09. revisit to use nixos-21.05 when possible.
+  unstable = import (builtins.fetchTarball {
+      url = "https://github.com/nixos/nixpkgs/archive/b3ea6461fa5e265f6ccc11561fa26a6af3c9d5a7.tar.gz";
+      sha256 = "14zxxwpflyy86y24li6m9s74as3xc58l94jh6hfj41kl4smb5g2b";
+    })
+    {
+      # reuse the current configuration
+      config = pkgs.config;
+    };
+
 in
 with pkgs;
 stdenv.mkDerivation {
@@ -28,5 +40,7 @@ stdenv.mkDerivation {
     systemfd
     cargo-watch
     ws
+
+    unstable.mpv
   ];
 }
