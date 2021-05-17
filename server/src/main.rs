@@ -6,6 +6,7 @@ use async_std::task;
 use choosy_embed;
 use choosy_protocol as proto;
 use http_types::mime;
+use listenfd::ListenFd;
 use scopeguard;
 use std::path::Path;
 use std::time::Duration;
@@ -148,11 +149,11 @@ async fn main() -> anyhow::Result<()> {
     app.at("/ws").get(ws::Handle::new(websocket));
     app.at("/api/debug/add-file").post(debug_add_file);
 
-    use std::{env, net::TcpListener, os::unix::io::FromRawFd, os::unix::io::RawFd};
-    let listen_fd = env::var("LISTEN_FD").context("LISTEN_FD must be set in environment")?;
-    let fd: RawFd = listen_fd
-        .parse()
-        .context("LISTEN_FD must be a file descriptor")?;
-    app.listen(unsafe { TcpListener::from_raw_fd(fd) }).await?;
+    let mut fds = ListenFd::from_env();
+    let listener = fds
+        .take_tcp_listener(0)
+        .context("LISTEN_FDS must set up listening sockets")?
+        .ok_or(anyhow::anyhow!("LISTEN_FDS must have set up a TCP socket"))?;
+    app.listen(listener).await?;
     Ok(())
 }
