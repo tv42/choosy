@@ -18,6 +18,7 @@ struct Model {
     ws: Option<websocket::WebSocketTask>,
     ws_backoff: backoff::Backoff,
     search: String,
+    search_re: regex::Regex,
     files: BTreeMap<String, ()>,
 }
 
@@ -27,6 +28,21 @@ enum Msg {
     FromServer(proto::WSEvent),
     WebSocketStatus(WebSocketStatus),
     ConnectWebSocket,
+}
+
+fn build_search_re(query: &str) -> regex::Regex {
+    let mut re = String::new();
+    for fragment in query.split_whitespace() {
+        if !re.is_empty() {
+            re.push_str(".*");
+        }
+        re.push_str(&regex::escape(fragment));
+    }
+    regex::RegexBuilder::new(&re)
+        .case_insensitive(true)
+        .build()
+        // silently match everything on trouble; there really shouldn't be any, as we're escaping the input
+        .unwrap_or_else(|_| regex::Regex::new("").unwrap())
 }
 
 impl Component for Model {
@@ -39,6 +55,7 @@ impl Component for Model {
             ws: None,
             ws_backoff: backoff::Backoff::new(),
             search: "".to_string(),
+            search_re: build_search_re(""),
             files: BTreeMap::new(),
         }
     }
@@ -46,6 +63,7 @@ impl Component for Model {
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
             Msg::UpdateSearch { s } => {
+                self.search_re = build_search_re(&s);
                 self.search = s;
             }
             Msg::ServerError(error) => {
@@ -141,7 +159,7 @@ impl Component for Model {
         let entries = self
             .files
             .iter()
-            .filter(|(name, _)| name.contains(&self.search))
+            .filter(|(name, _)| self.search_re.is_match(name))
             // TODO relax this once the web UI agrees to be responsive enough
             .take(1000);
         html! {
