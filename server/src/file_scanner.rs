@@ -4,6 +4,18 @@ use std::path::Path;
 use tide::log;
 use walkdir::{DirEntry, WalkDir};
 
+fn is_interesting(entry: &DirEntry) -> bool {
+    let ext = match entry.path().extension() {
+        None => return false,
+        Some(ext) => ext,
+    };
+    // rust is being painful, Path::extension() is a Cow
+    match &*ext.to_string_lossy() {
+        "mkv" | "mp4" | "avi" | "ogm" | "wmv" | "m4v" | "rmvb" | "flv" | "mov" | "mpg" => true,
+        _ => false,
+    }
+}
+
 pub fn scan(path: &Path) -> impl Iterator<Item = proto::FileChange> {
     fn is_hidden(entry: &DirEntry) -> bool {
         entry.file_name().as_bytes()[0] == b'.'
@@ -36,7 +48,13 @@ pub fn scan(path: &Path) -> impl Iterator<Item = proto::FileChange> {
         })
         .filter(|entry| {
             let t = entry.file_type();
-            t.is_file() || t.is_symlink()
+            if !t.is_file() && !t.is_symlink() {
+                return false;
+            }
+            if !is_interesting(&entry) {
+                return false;
+            }
+            true
         })
         .map(|entry| {
             // we filtered out non-UTF-8 entries earlier
