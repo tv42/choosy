@@ -21,13 +21,11 @@ pub fn scan(path: &Path) -> impl Iterator<Item = proto::FileChange> {
                 // explicitly allow passing hidden entries as the argument (because "." counts as hidden), but skip ones found in directory listings.
                 return false;
             }
-            match entry.file_name().to_str() {
-                None => {
-                    log::warn!("ignoring non-UTF-8 filename: {:?}", entry.path());
-                    false
-                }
-                Some(_) => true,
+            if entry.file_name().to_str().is_none() {
+                log::warn!("ignoring non-UTF-8 filename: {:?}", entry.path());
+                return false;
             }
+            true
         })
         .filter_map(|result| match result {
             Err(error) => {
