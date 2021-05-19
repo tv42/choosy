@@ -2,6 +2,7 @@
 use async_std::prelude::*;
 use async_std::stream::StreamExt;
 use async_std::sync::Arc;
+use async_std::sync::Mutex;
 use async_std::task;
 use choosy_embed;
 use choosy_protocol as proto;
@@ -9,8 +10,10 @@ use http_types::mime;
 #[allow(unused_imports)]
 use kv_log_macro::{debug, error, info, log, trace, warn};
 use listenfd::ListenFd;
+use mpv_remote::MPV;
 use scopeguard;
 use serde_json;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 #[allow(unused_imports)]
@@ -33,6 +36,7 @@ struct File {}
 
 struct State {
     files: file_list::List,
+    playing: Mutex<Option<MPV>>,
 }
 
 async fn wasm_bg(_req: Request<Arc<State>>) -> tide::Result {
@@ -99,9 +103,9 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
                     Ok(cmd) => cmd,
                     Err(error) => {
                         debug!("websocket invalid JSON", {
-			    error: log::kv::Value::capture_error(&error),
-			    input: input,
-			});
+                            error: log::kv::Value::capture_error(&error),
+                            input: input,
+                        });
                         return Err(tide::Error::from_str(
                             StatusCode::BadRequest,
                             "invalid JSON",
@@ -120,14 +124,66 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
     Ok(())
 }
 
-async fn websocket_command(_state: &State, command: proto::WSCommand) {
+async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
     // don't sleep for long, this blocks websocket message reading (to prevent command reordering)
     match command {
         proto::WSCommand::Play { filename } => {
             debug!("play file", { filename: filename });
-	    // TODO confirm that the file is in our state.files
+            let mut events = {
+                let mut playing_guard = state.playing.lock().await;
+                if playing_guard.is_some() {
+                    debug!("already playing");
+                    // TODO shut down old player and start new?
+                    // don't want to lose place, maybe always run with --save-position-on-quit
+                    //
+                    // if not above, then inform frontend of error? then again, maybe i should just make "is playing" state visible to it, not as response to this.
+                    return;
+                }
+                // TODO confirm that the file is in our state.files
+                let mpv = match MPV::new(OsStr::new(&filename)) {
+                    Ok(mpv) => mpv,
+                    Err(error) => {
+                        warn!("cannot play media", {
+                            filename: filename,
+                            error: log::kv::Value::capture_error(&error),
+                        });
+                        return;
+                    }
+                };
+                let events = mpv.events().await;
+                *playing_guard = Some(mpv);
+                events
+            };
 
-	    // TODO
+            let state = state.clone();
+            task::spawn(async move {
+                while let Some(event) = events.next().await {
+                    debug!("mpv event", {
+                        event: log::kv::Value::capture_debug(&event),
+                    });
+                }
+
+                let mut playing_guard = state.playing.lock().await;
+                // unset playing and return old value, so we can consume it in close
+                let previous = std::mem::replace(&mut *playing_guard, None);
+                // TODO nothing says it's still the *same* mpv; this is brittle.
+                //
+                // Try to get something where self.playing is a data structure
+                // that "becomes None" when this task exits.
+                match previous {
+                    None => {
+                        // no idea how that happened
+                        debug!("internal error: playing is unexpectedly not set");
+                        return;
+                    }
+                    Some(mpv) => match mpv.close().await {
+                        Err(error) => warn!("mpv error", {
+                            error: log::kv::Value::capture_error(&error),
+                        }),
+                        Ok(_) => {}
+                    },
+                }
+            });
         }
     }
 }
@@ -151,6 +207,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(State {
         files: file_list::List::new(),
+        playing: Mutex::new(None),
     });
 
     let _file_scanner = task::spawn({
