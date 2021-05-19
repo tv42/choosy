@@ -532,6 +532,7 @@ dependencies = [
  "mpv_remote",
  "scopeguard",
  "serde",
+ "serde_json",
  "tide",
  "tide-websockets",
  "walkdir",

@@ -13,3 +13,9 @@ pub enum FileChange {
     Add { name: String },
     Del { name: String },
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum WSCommand {
+    Play { filename: String },
+}

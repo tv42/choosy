@@ -28,6 +28,7 @@ enum Msg {
     FromServer(proto::WSEvent),
     WebSocketStatus(WebSocketStatus),
     ConnectWebSocket,
+    Play { filename: String },
 }
 
 fn build_search_re(query: &str) -> regex::Regex {
@@ -144,6 +145,19 @@ impl Component for Model {
                     self.ws = Some(ws);
                 }
             },
+            Msg::Play { filename } => match &mut self.ws {
+                None => {
+                    yew::services::ConsoleService::info(&format!(
+                        "asked to play but not connected: {:?}",
+                        filename
+                    ));
+                    self.link.send_message(Msg::ConnectWebSocket);
+                }
+                Some(ws) => {
+                    let cmd = proto::WSCommand::Play { filename };
+                    ws.send(Json(&cmd));
+                }
+            },
         }
         true
     }
@@ -176,9 +190,18 @@ impl Component for Model {
                     style="width: 100%;"
                 />
                 <ul>
-                    { for entries.map(|(name,_)| html!{<li>{ name }</li>}) }
+                  {for entries.map(|(filename,_)| self.item_view(filename))}
                 </ul>
             </>
+        }
+    }
+}
+
+impl Model {
+    fn item_view(&self, filename: &str) -> Html {
+        let n = filename.to_string();
+        html! {
+            <li onclick=self.link.callback(move |_| Msg::Play { filename: n.clone() })>{filename}</li>
         }
     }
 }

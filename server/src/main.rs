@@ -10,6 +10,7 @@ use http_types::mime;
 use kv_log_macro::{debug, error, info, log, trace, warn};
 use listenfd::ListenFd;
 use scopeguard;
+use serde_json;
 use std::path::Path;
 use std::time::Duration;
 #[allow(unused_imports)]
@@ -93,7 +94,23 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
             ws::Message::Pong(_) => {
                 // ignore
             }
-            ws::Message::Text(_) | ws::Message::Binary(_) => {
+            ws::Message::Text(input) => {
+                let command: proto::WSCommand = match serde_json::from_str(&input) {
+                    Ok(cmd) => cmd,
+                    Err(error) => {
+                        debug!("websocket invalid JSON", {
+			    error: log::kv::Value::capture_error(&error),
+			    input: input,
+			});
+                        return Err(tide::Error::from_str(
+                            StatusCode::BadRequest,
+                            "invalid JSON",
+                        ));
+                    }
+                };
+                websocket_command(state, command).await;
+            }
+            ws::Message::Binary(_) => {
                 debug!("websocket unexpected input");
                 return Err(tide::Error::from_str(StatusCode::BadRequest, "TODO"));
             }
@@ -101,6 +118,18 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
     }
     debug!("websocket end of stream");
     Ok(())
+}
+
+async fn websocket_command(_state: &State, command: proto::WSCommand) {
+    // don't sleep for long, this blocks websocket message reading (to prevent command reordering)
+    match command {
+        proto::WSCommand::Play { filename } => {
+            debug!("play file", { filename: filename });
+	    // TODO confirm that the file is in our state.files
+
+	    // TODO
+        }
+    }
 }
 
 async fn debug_add_file(mut req: Request<Arc<State>>) -> tide::Result {
