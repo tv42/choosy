@@ -18,3 +18,5 @@ tide = "0.16.0"
 tide-websockets = "0.3.0"
 walkdir = "2.3.2"
 listenfd = "0.3.3"
+kv-log-macro = "1.0.7"
+log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }

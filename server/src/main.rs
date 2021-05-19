@@ -6,11 +6,12 @@ use async_std::task;
 use choosy_embed;
 use choosy_protocol as proto;
 use http_types::mime;
+#[allow(unused_imports)]
+use kv_log_macro::{debug, error, info, log, trace, warn};
 use listenfd::ListenFd;
 use scopeguard;
 use std::path::Path;
 use std::time::Duration;
-use tide::log;
 #[allow(unused_imports)]
 use tide::prelude::*;
 use tide::Body;
@@ -93,12 +94,12 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
                 // ignore
             }
             ws::Message::Text(_) | ws::Message::Binary(_) => {
-                log::debug!("websocket unexpected input");
+                debug!("websocket unexpected input");
                 return Err(tide::Error::from_str(StatusCode::BadRequest, "TODO"));
             }
         }
     }
-    log::debug!("websocket end of stream");
+    debug!("websocket end of stream");
     Ok(())
 }
 
@@ -117,7 +118,7 @@ async fn debug_add_file(mut req: Request<Arc<State>>) -> tide::Result {
 async fn main() -> anyhow::Result<()> {
     use anyhow::Context;
 
-    log::with_level(log::LevelFilter::Debug);
+    tide::log::with_level(tide::log::LevelFilter::Debug);
 
     let state = Arc::new(State {
         files: file_list::List::new(),
