@@ -5,6 +5,7 @@ use async_std::prelude::*;
 use async_std::process;
 use async_std::sync::Mutex;
 use async_std::task;
+use derive_builder::Builder;
 use futures_channel::oneshot;
 #[allow(unused_imports)]
 use kv_log_macro::{debug, error, info, log, trace, warn};
@@ -18,6 +19,12 @@ mod messages;
 pub use self::messages::*;
 mod pending;
 use self::pending::Pending;
+
+#[derive(Builder)]
+pub struct Config {
+    #[builder(default = "true")]
+    fullscreen: bool,
+}
 
 // MPV runs the mpv video player in a subprocess and observes the playback progress.
 pub struct MPV {
@@ -46,8 +53,8 @@ pub enum StartError {
     StartingMPV(std::io::Error),
 }
 
-impl MPV {
-    pub fn new(path: &OsStr) -> Result<MPV, StartError> {
+impl Config {
+    pub fn play(&self, path: &OsStr) -> Result<MPV, StartError> {
         let (socket, child_socket) = match UnixStream::pair() {
             Ok(pair) => pair,
             Err(error) => return Err(StartError::SocketCreate(error)),
@@ -58,17 +65,18 @@ impl MPV {
             let child_fd = child_socket.into_raw_fd();
             std::fs::File::from_raw_fd(child_fd)
         };
-        let child = match process::Command::new("mpv")
+        let mut cmd = process::Command::new("mpv");
+        cmd
             // RUST-WART I seem to be unable to pass FDs other than 0/1/2, without managing the fork+exec myself?
             .arg("--input-ipc-client=fd://0")
             .arg("--no-input-terminal")
-            .stdin(child_file)
-            // TODO full screen
-            .arg("--")
-            // TODO make non-absolute paths to start with "./" so mpv won't parse them as URLs
-            .arg(path)
-            .spawn()
-        {
+            .stdin(child_file);
+        if self.fullscreen {
+            cmd.arg("--fullscreen");
+        }
+        // TODO make non-absolute paths to start with "./" so mpv won't parse them as URLs
+        cmd.arg("--").arg(path);
+        let child = match cmd.spawn() {
             Ok(proc) => proc,
             Err(error) => return Err(StartError::StartingMPV(error)),
         };
@@ -97,6 +105,12 @@ impl MPV {
             ipc_task,
         };
         Ok(mpv)
+    }
+}
+
+impl MPV {
+    pub fn builder() -> ConfigBuilder {
+        ConfigBuilder::default()
     }
 
     pub async fn events(&self) -> async_broadcast::Receiver<MPVEvent> {

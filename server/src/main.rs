@@ -139,8 +139,17 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
                     // if not above, then inform frontend of error? then again, maybe i should just make "is playing" state visible to it, not as response to this.
                     return;
                 }
+                let mpv_config = match MPV::builder().build() {
+                    Ok(builder) => builder,
+                    Err(error) => {
+                        warn!("error configuring MPV", {
+                            error: log::kv::Value::capture_error(&error),
+                        });
+                        return;
+                    }
+                };
                 // TODO confirm that the file is in our state.files
-                let mpv = match MPV::new(OsStr::new(&filename)) {
+                let mpv = match mpv_config.play(OsStr::new(&filename)) {
                     Ok(mpv) => mpv,
                     Err(error) => {
                         warn!("cannot play media", {

@@ -7,6 +7,7 @@ edition = "2018"
 [dependencies]
 async-broadcast = "0.2.0"
 async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
+derive_builder = "0.10.2"
 futures-channel = "0.3.15"
 kv-log-macro = "1.0.7"
 libc = "0.2.94"

@@ -14,7 +14,7 @@ use mpv_remote::MPV;
 async fn main() -> anyhow::Result<()> {
     femme::with_level(femme::LevelFilter::Debug);
 
-    let mpv = MPV::new(
+    let mpv = MPV::builder().fullscreen(false).build()?.play(
         OsStr::new("/home/tv/tmp/z.mkv"),
         // process_event,
     )?;
