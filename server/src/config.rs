@@ -3,10 +3,17 @@ use serde::Deserialize;
 use std::fs::File;
 use thiserror::Error;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Clone, Debug)]
 #[serde(rename = "ChoosyConfig")]
 pub struct Config {
     pub path: String,
+    // Whether the player should be fullscreen or not.
+    #[serde(default = "default_true")]
+    pub fullscreen: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Error, Debug)]

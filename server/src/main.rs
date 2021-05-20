@@ -37,6 +37,7 @@ use config::Config;
 struct File {}
 
 struct State {
+    config: Config,
     files: file_list::List,
     playing: Mutex<Option<MPV>>,
 }
@@ -141,7 +142,9 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
                     // if not above, then inform frontend of error? then again, maybe i should just make "is playing" state visible to it, not as response to this.
                     return;
                 }
-                let mpv_config = match MPV::builder().build() {
+                let mut mpv_builder = MPV::builder();
+                mpv_builder.fullscreen(state.config.fullscreen);
+                let mpv_config = match mpv_builder.build() {
                     Ok(builder) => builder,
                     Err(error) => {
                         warn!("error configuring MPV", {
@@ -219,6 +222,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load("choosy.ron").context("error loading config file")?;
 
     let state = Arc::new(State {
+        config: config.clone(),
         files: file_list::List::new(),
         playing: Mutex::new(None),
     });

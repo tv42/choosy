@@ -22,6 +22,7 @@ use self::pending::Pending;
 
 #[derive(Builder)]
 pub struct Config {
+    // External bug: MPV never starts fullscreen under ChromeOS Linux container, even if pressing "f" later works.
     #[builder(default = "true")]
     fullscreen: bool,
 }
