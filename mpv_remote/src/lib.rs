@@ -8,6 +8,7 @@ use async_std::task;
 use futures_channel::oneshot;
 #[allow(unused_imports)]
 use kv_log_macro::{debug, error, info, log, trace, warn};
+// WAITING incorrect error from rust-analyzer https://github.com/rust-analyzer/rust-analyzer/issues/6038
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::IntoRawFd;
 use std::{ffi::OsStr, sync::Arc};
