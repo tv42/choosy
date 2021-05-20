@@ -28,8 +28,10 @@ mod ws {
     pub use tide_websockets::{Message, WebSocket as Handle, WebSocketConnection as Conn};
 }
 
+mod config;
 mod file_list;
 mod file_scanner;
+use config::Config;
 
 #[derive(Clone, PartialEq)]
 struct File {}
@@ -214,6 +216,8 @@ async fn main() -> anyhow::Result<()> {
 
     tide::log::with_level(tide::log::LevelFilter::Debug);
 
+    let config = Config::load("choosy.ron").context("error loading config file")?;
+
     let state = Arc::new(State {
         files: file_list::List::new(),
         playing: Mutex::new(None),
@@ -226,8 +230,7 @@ async fn main() -> anyhow::Result<()> {
 
             // this is task that often blocks, but we rely on async_std to spawn new async execution threads when needed
             loop {
-                // TODO take path from config
-                let path = Path::new(".");
+                let path = Path::new(&config.path);
                 let clear = std::iter::once(proto::FileChange::ClearAll);
                 let found = file_scanner::scan(path);
                 let changes = clear.chain(found);
