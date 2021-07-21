@@ -13,8 +13,7 @@ use listenfd::ListenFd;
 use mpv_remote::MPV;
 use scopeguard;
 use serde_json;
-use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 #[allow(unused_imports)]
 use tide::prelude::*;
@@ -132,6 +131,14 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
     match command {
         proto::WSCommand::Play { filename } => {
             debug!("play file", { filename: filename });
+            // Confirm that the file is in our state.files
+            if !state.files.contains(&filename).await {
+                // We might have removed the file concurrently, so this is not always an "attack".
+                warn!("browser submitted invalid file", {
+                    filename: &filename,
+                });
+                return;
+            }
             let mut events = {
                 let mut playing_guard = state.playing.lock().await;
                 if playing_guard.is_some() {
@@ -153,8 +160,16 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
                         return;
                     }
                 };
-                // TODO confirm that the file is in our state.files
-                let mpv = match mpv_config.play(OsStr::new(&filename)) {
+                // This is safe because we've confirmed the file is in our list of files, and that prevents hostile inputs.
+                //
+                // TODO Currently, validation checks that they are currently included in our known files, which is racy.
+                //
+                // RUST-WART No clean way to lexically prevent "/evil", "../evil" without reading symlinks and whatnot?
+                let mut path = PathBuf::new();
+                path.push(&state.config.path);
+                path.push(&filename);
+                let path = path.into_os_string();
+                let mpv = match mpv_config.play(&path) {
                     Ok(mpv) => mpv,
                     Err(error) => {
                         warn!("cannot play media", {

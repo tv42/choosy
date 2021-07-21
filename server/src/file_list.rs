@@ -32,6 +32,11 @@ impl List {
         }
     }
 
+    pub async fn contains(&self, s: &str) -> bool {
+        let files = self.files.lock().await;
+        files.get(s).is_some()
+    }
+
     pub async fn update(&self, changes: impl Iterator<Item = proto::FileChange>) {
         let mut files = self.files.lock().await;
         let prev = files.clone();
