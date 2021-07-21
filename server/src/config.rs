@@ -7,7 +7,7 @@ use thiserror::Error;
 #[serde(rename = "ChoosyConfig")]
 pub struct Config {
     pub path: String,
-    // Whether the player should be fullscreen or not.
+    /// Whether the player should be fullscreen or not.
     #[serde(default = "default_true")]
     pub fullscreen: bool,
 }
