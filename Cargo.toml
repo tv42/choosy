@@ -1,2 +1,2 @@
 [workspace]
-members = ["frontend", "embed", "server", "protocol", "mpv_remote"]
+members = ["frontend", "embed", "server", "protocol", "mpv_remote", "sleigh"]

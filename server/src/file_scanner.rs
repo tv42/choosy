@@ -1,4 +1,3 @@
-use choosy_protocol as proto;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,7 +16,7 @@ fn is_interesting(entry: &DirEntry) -> bool {
     }
 }
 
-pub fn scan(path: &Path) -> impl Iterator<Item = proto::FileChange> {
+pub fn scan(path: &Path) -> impl Iterator<Item = String> {
     fn is_hidden(entry: &DirEntry) -> bool {
         entry.file_name().as_bytes()[0] == b'.'
     }
@@ -68,7 +67,7 @@ pub fn scan(path: &Path) -> impl Iterator<Item = proto::FileChange> {
                 Ok(relative) => {
                     // we filtered out non-UTF-8 entries earlier
                     let p = relative.to_string_lossy().to_string();
-                    Some(proto::FileChange::Add { name: p })
+                    Some(p)
                 }
             }
         });

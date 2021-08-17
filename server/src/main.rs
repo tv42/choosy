@@ -13,6 +13,7 @@ use listenfd::ListenFd;
 use mpv_remote::MPV;
 use scopeguard;
 use serde_json;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 #[allow(unused_imports)]
@@ -28,7 +29,7 @@ mod ws {
 }
 
 mod config;
-mod file_list;
+mod database;
 mod file_scanner;
 use config::Config;
 
@@ -37,7 +38,7 @@ struct File {}
 
 struct State {
     config: Config,
-    files: file_list::List,
+    media: database::MediaDb,
     playing: Mutex<Option<MPV>>,
 }
 
@@ -64,17 +65,107 @@ async fn index_html(_req: Request<Arc<State>>) -> tide::Result {
 }
 
 async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
-    let mut stream = state.files.change_batches();
-    loop {
-        let mut changes = stream.next().await;
-        loop {
-            let batch: Vec<proto::FileChange> = changes.by_ref().take(1000).collect();
-            if batch.is_empty() {
-                break;
+    // We need to start watching for changes before scanning the existing data, or we might miss an update.
+    // We need to send the existing data first, before processing watch events, to avoid races.
+    // However, subscriber must be consumed expediently or it will block database writers.
+    // Hence, we buffer the subscriber events while the initial scan is working.
+    // In this use case, we can coalesce the events by key.
+    // That might consume a lot of memory, but in this use case we're roughly bounded by the number of files changes noticed in one scan, which we assume we can already hold in memory elsewhere.
+    let subscriber = state.media.watch_prefix("");
+
+    // Do sled tree watching in a separate thread, with a channel between them, to notice slow consumers and kick them out, instead of blocking the database.
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1000);
+    let events_thread = std::thread::spawn(move || -> Result<(), anyhow::Error> {
+        // TODO do i care about exact error? at least db error!
+
+        // TODO use iterator chaining here
+
+        let mut buffered_events = BTreeMap::new();
+
+        // First, scan the database for existing entries.
+        {
+            for result in state.media.scan_prefix("") {
+                let (key, item) = result?;
+                if item.exists {
+                    // Since this is the initial state dump, we don't need to send Del changes.
+
+                    // TODO Get rid of the batching, as we now stream events.
+                    let batch = vec![proto::FileChange::Add {
+                        name: String::from_utf8_lossy(&key.as_ref()).into_owned(),
+                    }];
+                    sender.try_send(batch)?;
+                }
+
+                // Pump the sled subscriber events to avoid blocking writers.
+                while let Ok(event) = subscriber.next_timeout(Duration::from_nanos(0)) {
+                    let key = match &event {
+                        sleigh::Event::Insert { key, .. } => key.clone(),
+                        sleigh::Event::Remove { key } => key.clone(),
+                    };
+                    buffered_events.insert(key, event);
+                }
             }
-            conn.send_json(&proto::WSEvent::FileChange(batch)).await?;
         }
-    }
+
+        // Then send buffered events.
+        {
+            for (key, event) in buffered_events.into_iter() {
+                let name = String::from_utf8_lossy(&key.as_ref()).into_owned();
+                let change = match event {
+                    sleigh::Event::Insert { key: _, value } => {
+                        if value.exists {
+                            proto::FileChange::Add { name }
+                        } else {
+                            proto::FileChange::Del { name }
+                        }
+                    }
+                    sleigh::Event::Remove { key: _ } => proto::FileChange::Del { name },
+                };
+                let batch = vec![change];
+                sender.try_send(batch)?;
+            }
+        }
+
+        // Finally, stream events as they happen.
+        //
+        // If the client goes away, this may stick around until the next database mutation, which might not come in a long while.
+        for result in subscriber {
+            let event = result?;
+            let change = match event {
+                sleigh::Event::Insert { key, value } => {
+                    let name = String::from_utf8_lossy(&key.as_ref()).into_owned();
+                    if value.exists {
+                        proto::FileChange::Add { name }
+                    } else {
+                        proto::FileChange::Del { name }
+                    }
+                }
+                sleigh::Event::Remove { key } => proto::FileChange::Del {
+                    name: String::from_utf8_lossy(&key.as_ref()).into_owned(),
+                },
+            };
+            let batch = vec![change];
+            sender.try_send(batch)?;
+        }
+        Ok(())
+    });
+
+    let ws_thread = std::thread::spawn(move || -> tide::Result<()> {
+        for batch in receiver {
+            async_std::task::block_on(async {
+                conn.send_json(&proto::WSEvent::FileChange(batch)).await
+            })?;
+        }
+        Ok(())
+    });
+
+    events_thread
+        .join()
+        .expect("internal error: thread join error")?;
+    ws_thread
+        .join()
+        .expect("internal error: thread join error")?;
+    Ok(())
 }
 
 async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result<(), tide::Error> {
@@ -132,7 +223,11 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
         proto::WSCommand::Play { filename } => {
             debug!("play file", { filename: filename });
             // Confirm that the file is in our state.files
-            if !state.files.contains(&filename).await {
+            let exists = match state.media.get(&filename).expect("database error") {
+                Some(item) => item.exists,
+                None => false,
+            };
+            if !exists {
                 // We might have removed the file concurrently, so this is not always an "attack".
                 warn!("browser submitted invalid file", {
                     filename: &filename,
@@ -217,17 +312,6 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
     }
 }
 
-async fn debug_add_file(mut req: Request<Arc<State>>) -> tide::Result {
-    let body = req.body_string().await?;
-    let state = req.state();
-    state
-        .files
-        .update(vec![proto::FileChange::Add { name: body }].into_iter())
-        .await;
-    let resp = Response::new(StatusCode::Ok);
-    Ok(resp)
-}
-
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
     use anyhow::Context;
@@ -236,36 +320,93 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::load("choosy.ron").context("error loading config file")?;
 
+    let db = sled::open("choosy.db").context("error opening database")?;
+    let tree = db
+        .open_tree("media")
+        .context("error opening database table for media")?;
+    let media = database::MediaDb::new(tree.clone());
     let state = Arc::new(State {
         config: config.clone(),
-        files: file_list::List::new(),
+        media,
         playing: Mutex::new(None),
     });
 
-    let _file_scanner = task::spawn({
+    let _file_scanner = {
         let state = state.clone();
-        async move {
-            // i tried to delegate this loop to mod file_scanner, but passing in an async trait-using callback function as an argument was just too obscure.
-
-            // this is task that often blocks, but we rely on async_std to spawn new async execution threads when needed
+        std::thread::spawn(move || {
             loop {
-                let path = Path::new(&config.path);
-                let clear = std::iter::once(proto::FileChange::ClearAll);
+                let path = Path::new(&state.config.path);
                 let found = file_scanner::scan(path);
-                let changes = clear.chain(found);
-                state.files.update(changes).await;
-                // TODO relax this timing once everything stabilizies, and especially if and when notifications are used for low latency reactions.
-                task::sleep(Duration::from_secs(60)).await;
+                let files: BTreeSet<String> = found.collect();
+                // debug!("files", { files: log::kv::Value::capture_debug(&files) });
+                let db = state.media.scan_prefix("");
+                let merge = itertools::merge_join_by(db, files, |result, file_path| match result {
+                    Ok((key, _item)) => key.cmp(&sled::IVec::from(file_path.as_str())),
+                    Err(_) => return std::cmp::Ordering::Less,
+                });
+                for merged in merge {
+                    // debug!("merge", { merged: log::kv::Value::capture_debug(&merged) });
+                    use itertools::EitherOrBoth::*;
+                    match merged {
+                        Left(Err(error)) => warn!("file scanner: database error", {
+                            error: log::kv::Value::capture_error(&error),
+                        }),
+                        Left(Ok((key, item))) => {
+                            // Found in database, not on filesystem.
+                            if item.exists {
+                                let result = state
+                                    .media
+                                    .merge(key, &vec![database::media::Op::Exists(false)]);
+                                match result {
+                                    Ok(_) => (),
+                                    Err(error) => warn!("file scanner: database error", {
+                                        error: log::kv::Value::capture_error(&error),
+                                    }),
+                                }
+                            }
+                        }
+                        Right(file_path) => {
+                            // Found on filesystem, not in database
+                            let result = state
+                                .media
+                                .merge(file_path, &vec![database::media::Op::Exists(true)]);
+                            match result {
+                                Ok(_) => (),
+                                Err(error) => warn!("file scanner: database error", {
+                                    error: log::kv::Value::capture_error(&error),
+                                }),
+                            }
+                        }
+                        Both(Err(error), _) => warn!("file scanner: database error", {
+                            error: log::kv::Value::capture_error(&error),
+                        }),
+                        Both(Ok((key, item)), _file_path) => {
+                            // Found in both; ensure database says exists=true.
+                            if !item.exists {
+                                let result = state
+                                    .media
+                                    .merge(key, &vec![database::media::Op::Exists(true)]);
+                                match result {
+                                    Ok(_) => (),
+                                    Err(error) => warn!("file scanner: database error", {
+                                        error: log::kv::Value::capture_error(&error),
+                                    }),
+                                }
+                            }
+                        }
+                    }
+                }
+                // TODO inotify
+                std::thread::sleep(Duration::from_secs(9));
             }
-        }
-    });
+        })
+    };
 
     let mut app = tide::with_state(state);
     app.at("/choosy_frontend_bg.wasm").get(wasm_bg);
     app.at("/choosy_frontend.js").get(wasm_js);
     app.at("/").get(index_html);
     app.at("/ws").get(ws::Handle::new(websocket));
-    app.at("/api/debug/add-file").post(debug_add_file);
 
     let mut fds = ListenFd::from_env();
     let listener = fds
