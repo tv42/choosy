@@ -10,3 +10,4 @@ async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
 [build-dependencies]
 anyhow = "1.0.40"
 cargo_metadata = "0.13.1"
+wasm-bindgen-cli = { version = "0.2.74", features = ["vendored-openssl"] }
