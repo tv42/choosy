@@ -42,6 +42,20 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
         })
         .filter_map(|result| match result {
             Err(error) => {
+                let is_lost_found = error
+                    .path()
+                    .and_then(|p| p.file_name())
+                    .map(|f| f == "lost+found")
+                    .unwrap_or(false);
+                let is_eperm = error
+                    .io_error()
+                    .map(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
+                    .unwrap_or(false);
+                if is_lost_found && is_eperm {
+                    // Hide errors about not being able to read directory `lost+found`, it's a special case for ext4 and we're likely to encounter it when media is stored on a separate "data disk".
+                    return None;
+                }
+
                 log::warn!("file scanning error: {}", error);
                 None
             }
