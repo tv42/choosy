@@ -1,6 +1,7 @@
 use async_std::io;
 use serde::Deserialize;
 use std::fs::File;
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Deserialize, Clone, Debug)]
@@ -31,8 +32,8 @@ pub enum ConfigError {
 }
 
 impl Config {
-    pub fn load(filename: &str) -> Result<Config, ConfigError> {
-        let file = File::open(filename)?;
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Config, ConfigError> {
+        let file = File::open(path)?;
         let config: Config = ron::de::from_reader(file)?;
         Ok(config)
     }
