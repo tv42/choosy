@@ -16,6 +16,7 @@ use serde_json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use structopt::StructOpt;
 #[allow(unused_imports)]
 use tide::prelude::*;
 use tide::Body;
@@ -312,15 +313,31 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
     }
 }
 
+#[derive(structopt::StructOpt, Debug)]
+#[structopt(
+    name = "choosy",
+    about = "Choose a file and play it with mpv",
+    no_version
+)]
+struct Opt {
+    /// Load configuration from file
+    #[structopt(long, parse(from_os_str))]
+    config: PathBuf,
+
+    /// Database location
+    #[structopt(long, parse(from_os_str))]
+    database: PathBuf,
+}
+
 #[async_std::main]
 async fn main() -> anyhow::Result<()> {
     use anyhow::Context;
 
     tide::log::with_level(tide::log::LevelFilter::Debug);
 
-    let config = Config::load("choosy.ron").context("error loading config file")?;
-
-    let db = sled::open("choosy.db").context("error opening database")?;
+    let opt = Opt::from_args();
+    let config = Config::load(opt.config).context("error loading config file")?;
+    let db = sled::open(opt.database).context("error opening database")?;
     let tree = db
         .open_tree("media")
         .context("error opening database table for media")?;

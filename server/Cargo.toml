@@ -25,3 +25,4 @@ thiserror = "1.0.24"
 sled = "0.34.6"
 sleigh = { path = "../sleigh" }
 itertools = "0.10.1"
+structopt = "0.3.22"
