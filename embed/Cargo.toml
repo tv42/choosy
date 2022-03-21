@@ -5,9 +5,9 @@ authors = ["Tommi Virtanen <tv@eagain.net>"]
 edition = "2018"
 
 [dependencies]
-async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
+async-std = { version = "1.10.0", features = ["attributes", "unstable"] }
 
 [build-dependencies]
-anyhow = "1.0.40"
-cargo_metadata = "0.13.1"
-wasm-bindgen-cli = { version = "0.2.74", features = ["vendored-openssl"] }
+anyhow = "1.0.56"
+cargo_metadata = "0.14.2"
+wasm-bindgen-cli = { version = "0.2.79", features = ["vendored-openssl"] }

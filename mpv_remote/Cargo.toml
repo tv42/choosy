@@ -5,18 +5,18 @@ authors = ["Tommi Virtanen <tv@eagain.net>"]
 edition = "2018"
 
 [dependencies]
-async-broadcast = "0.2.0"
-async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
-derive_builder = "0.10.2"
-futures-channel = "0.3.15"
+async-broadcast = "0.4.0"
+async-std = { version = "1.10.0", features = ["attributes", "unstable"] }
+derive_builder = "0.11.1"
+futures-channel = "0.3.21"
 kv-log-macro = "1.0.7"
-libc = "0.2.94"
+libc = "0.2.121"
 log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }
-serde = { version = "1.0.126", features = ["derive"] }
-serde_json = { version = "1.0.64", features = ["raw_value"] }
-slab = "0.4.3"
-thiserror = "1.0.24"
+serde = { version = "1.0.136", features = ["derive"] }
+serde_json = { version = "1.0.79", features = ["raw_value"] }
+slab = "0.4.5"
+thiserror = "1.0.30"
 
 [dev-dependencies]
-anyhow = "1.0.40"
+anyhow = "1.0.56"
 femme = "2.1.1"

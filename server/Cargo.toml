@@ -5,24 +5,24 @@ authors = ["Tommi Virtanen <tv@eagain.net>"]
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0.40"
-async-std = { version = "1.9.0", features = ["attributes", "unstable"] }
+anyhow = "1.0.56"
+async-std = { version = "1.10.0", features = ["attributes", "unstable"] }
 choosy_embed = { path = "../embed" }
 choosy_protocol = { path = "../protocol" }
 mpv_remote = { path = "../mpv_remote" }
-http-types = "2.11.1"
+http-types = "2.12.0"
 scopeguard = "1.1.0"
-serde = { version = "1.0.126", features = ["derive"] }
+serde = { version = "1.0.136", features = ["derive"] }
 tide = "0.16.0"
-tide-websockets = "0.3.0"
+tide-websockets = "0.4.0"
 walkdir = "2.3.2"
-listenfd = "0.3.3"
+listenfd = "0.5.0"
 kv-log-macro = "1.0.7"
 log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }
-serde_json = "1.0.64"
-ron = "0.6.4"
-thiserror = "1.0.24"
+serde_json = "1.0.79"
+ron = "0.7.0"
+thiserror = "1.0.30"
 sled = "0.34.6"
 sleigh = { path = "../sleigh" }
-itertools = "0.10.1"
-structopt = "0.3.22"
+itertools = "0.10.3"
+structopt = "0.3.26"
