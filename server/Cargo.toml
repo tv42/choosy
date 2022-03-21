@@ -22,7 +22,7 @@ log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }
 serde_json = "1.0.79"
 ron = "0.7.0"
 thiserror = "1.0.30"
-sled = "0.34.6"
+sled = "0.34.7"
 sleigh = { path = "../sleigh" }
 itertools = "0.10.3"
 structopt = "0.3.26"

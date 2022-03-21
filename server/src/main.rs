@@ -72,7 +72,7 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
     // Hence, we buffer the subscriber events while the initial scan is working.
     // In this use case, we can coalesce the events by key.
     // That might consume a lot of memory, but in this use case we're roughly bounded by the number of files changes noticed in one scan, which we assume we can already hold in memory elsewhere.
-    let subscriber = state.media.watch_prefix("");
+    let mut subscriber = state.media.watch_prefix("");
 
     // Do sled tree watching in a separate thread, with a channel between them, to notice slow consumers and kick them out, instead of blocking the database.
     let (sender, receiver) = std::sync::mpsc::sync_channel(1000);

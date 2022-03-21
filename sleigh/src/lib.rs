@@ -203,7 +203,7 @@ where
     }
 
     pub fn next_timeout(
-        &self,
+        &mut self,
         timeout: Duration,
     ) -> Result<Event<V>, SubscriberTimeoutError<Enc::Error>> {
         let orig = self.sub.next_timeout(timeout)?;
