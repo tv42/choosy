@@ -1,21 +1,23 @@
 // the html! macro failed to build without this
 #![recursion_limit = "256"]
 
-use anyhow;
 use choosy_protocol as proto;
 use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
-use websocket::WebSocketStatus;
-use yew::callback::Callback;
-use yew::format::Json;
+use wasm_bindgen::JsCast;
 use yew::prelude::*;
-use yew::services::websocket;
 
 mod backoff;
 
+mod websocket;
+use self::websocket::WebSocket;
+
+mod console {
+    pub use weblog::{console_error as error, console_info as info};
+}
+
 struct Model {
-    link: ComponentLink<Self>,
-    ws: Option<websocket::WebSocketTask>,
+    ws: Option<WebSocket>,
     ws_backoff: backoff::Backoff,
     search: String,
     search_re: regex::Regex,
@@ -24,11 +26,12 @@ struct Model {
 
 enum Msg {
     UpdateSearch { s: String },
-    ServerError(anyhow::Error),
-    FromServer(proto::WSEvent),
-    WebSocketStatus(WebSocketStatus),
-    ConnectWebSocket,
     Play { filename: String },
+    ConnectWebSocket,
+    WebSocketOpened,
+    WebSocketClosed,
+    WebSocketJsonParseError(serde_json::Error),
+    FromServer(proto::WSEvent),
 }
 
 fn build_search_re(query: &str) -> regex::Regex {
@@ -49,10 +52,9 @@ fn build_search_re(query: &str) -> regex::Regex {
 impl Component for Model {
     type Message = Msg;
     type Properties = ();
-    fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
-        link.send_message(Msg::ConnectWebSocket);
+    fn create(ctx: &Context<Self>) -> Self {
+        ctx.link().send_message(Msg::ConnectWebSocket);
         Self {
-            link,
             ws: None,
             ws_backoff: backoff::Backoff::new(),
             search: "".to_string(),
@@ -61,17 +63,14 @@ impl Component for Model {
         }
     }
 
-    fn update(&mut self, msg: Self::Message) -> ShouldRender {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::UpdateSearch { s } => {
                 self.search_re = build_search_re(&s);
                 self.search = s;
             }
-            Msg::ServerError(error) => {
-                yew::services::ConsoleService::info(&format!(
-                    "error reading from server: {:?}",
-                    error
-                ));
+            Msg::WebSocketJsonParseError(error) => {
+                console::info!(&format!("error reading from server: {:?}", error));
             }
             Msg::FromServer(msg) => {
                 match msg {
@@ -92,84 +91,99 @@ impl Component for Model {
                     }
                 };
             }
-            Msg::WebSocketStatus(status) => {
-                yew::services::ConsoleService::info(&format!("ws status: {:?}", status));
-                match status {
-                    WebSocketStatus::Opened => {
-                        self.ws_backoff.success();
-                    }
-                    WebSocketStatus::Closed | WebSocketStatus::Error => {
-                        self.ws = None;
+            Msg::WebSocketOpened => {
+                console::info!("WebSocket connection opened");
+                self.ws_backoff.success();
+            }
+            Msg::WebSocketClosed => {
+                self.ws = None;
 
-                        // trigger a reconnect, after a delay
-                        let delay = self.ws_backoff.delay();
-                        yew::services::ConsoleService::info(&format!(
-                            "WebSocket connection {:?}, retrying in {:?}...",
-                            status, delay,
-                        ));
-                        let callback = self.link.callback(|_| Msg::ConnectWebSocket);
+                // trigger a reconnect, after a delay
+                let delay = self.ws_backoff.delay();
+                console::info!(&format!(
+                    "WebSocket connection closed, retrying in {:?}...",
+                    delay,
+                ));
+                let callback = ctx.link().callback(|_| Msg::ConnectWebSocket);
 
-                        // Yew TimeoutService has a weird API where the timer is cancelled if you drop the returned task, and it provides no way to avoid that. Just assume web-sys and go directly to the underlying, slightly saner, API.
-                        use gloo::timers::callback::Timeout;
-                        let js_callback = move || {
-                            callback.emit(());
-                        };
-                        let timeout = Timeout::new(delay.as_millis() as u32, js_callback);
-                        timeout.forget();
-                    }
-                }
+                use gloo::timers::callback::Timeout;
+                let js_callback = move || {
+                    callback.emit(());
+                };
+                let timeout = Timeout::new(delay.as_millis() as u32, js_callback);
+                timeout.forget();
             }
             Msg::ConnectWebSocket => match self.ws {
                 Some(_) => {
-                    yew::services::ConsoleService::info(
-                        "asked to connect websocket, but it's already connected",
-                    );
+                    console::info!("asked to connect websocket, but it's already connected",);
                 }
                 None => {
-                    let ws_msg = self.link.callback(|text: yew::format::Text| {
-                        let Json(result) = Json::from(text);
-                        match result {
-                            Ok(data) => Msg::FromServer(data),
-                            Err(error) => Msg::ServerError(error),
-                        }
-                    });
-                    let ws_status = self.link.callback(|status| Msg::WebSocketStatus(status));
-                    let host = yew::utils::host().unwrap();
+                    let host = {
+                        let window = web_sys::window().expect("must have JS window");
+                        let document = window.document().expect("must have JS document");
+                        let location = document.location().expect("must have JS document.location");
+                        location
+                            .host()
+                            .expect("must have JS document.location.host")
+                    };
                     let url = format!("ws://{}/ws", host);
-                    let ws = websocket::WebSocketService::connect_text(
-                        &url,
-                        ws_msg,
-                        Callback::from(ws_status),
-                    )
-                    .unwrap();
+
+                    // let on_open = |_event| {};
+                    let cb_open = ctx.link().callback_once(|_event| Msg::WebSocketOpened);
+                    let on_open = move |event| cb_open.emit(event);
+                    let on_error = |event| {
+                        console::error!(format!("WebSocket closing due to error: {:?}", event));
+                    };
+                    let cb_close = ctx.link().callback_once(|_event| Msg::WebSocketClosed);
+                    let on_close = move |event| cb_close.emit(event);
+                    let cb_message =
+                        ctx.link().callback(|buf: Vec<u8>| {
+                            match serde_json::from_slice::<proto::WSEvent>(&buf) {
+                                Err(error) => Msg::WebSocketJsonParseError(error),
+                                Ok(msg) => Msg::FromServer(msg),
+                            }
+                        });
+                    let on_message = move |event: web_sys::MessageEvent| {
+                        // Do more work here, as `yew::html::Callback` *has to* return a message, and we conveniently ignore unrecognized things.
+                        if let Ok(array_buf) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
+                            let buf = js_sys::Uint8Array::new(&array_buf).to_vec();
+                            cb_message.emit(buf);
+                        } else {
+                            // TODO maybe switch to ArrayBuffer (and maybe Blob too)?
+                            console::error!("unexpected WebSocket message type", event.data());
+                        }
+                    };
+                    let ws = WebSocket::new(&url, on_open, on_error, on_close, on_message).unwrap();
                     self.ws = Some(ws);
                 }
             },
-            Msg::Play { filename } => match &mut self.ws {
+            Msg::Play { filename } => match &self.ws {
                 None => {
-                    yew::services::ConsoleService::info(&format!(
-                        "asked to play but not connected: {:?}",
-                        filename
-                    ));
-                    self.link.send_message(Msg::ConnectWebSocket);
+                    console::info!(&format!("asked to play but not connected: {:?}", filename));
+                    ctx.link().send_message(Msg::ConnectWebSocket);
                 }
                 Some(ws) => {
                     let cmd = proto::WSCommand::Play { filename };
-                    ws.send(Json(&cmd));
+                    match ws.send_json(&cmd) {
+                        Ok(_) => {}
+                        Err(error) => {
+                            console::error!(format!("websocket send: {:?}", error));
+                        }
+                    };
                 }
             },
-        }
+        };
         true
     }
 
-    fn change(&mut self, _props: Self::Properties) -> ShouldRender {
+    fn changed(&mut self, _ctx: &Context<Self>) -> bool {
         // Should only return "true" if new properties are different to
         // previously received properties.
         // This component has no properties so we will always return "false".
         false
     }
 
-    fn view(&self) -> Html {
+    fn view(&self, ctx: &Context<Self>) -> Html {
         let entries = self
             .files
             .iter()
@@ -185,23 +199,20 @@ impl Component for Model {
                     // yew support
                     //
                     // https://github.com/yewstack/yew/issues/1851
-                    value=self.search.clone()
-                    oninput=self.link.callback(|e: yew::InputData| Msg::UpdateSearch{s: e.value})
+                    value={self.search.clone()}
+                    oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or("".to_string())})}
                     style="width: 100%;"
                 />
                 <ul>
-                  {for entries.map(|(filename,_)| self.item_view(filename))}
+                  {for entries.map(|(filename,_)| {
+                    let tmp = filename.to_string();
+                    let callback = ctx.link().callback(move |_| Msg::Play { filename: tmp.clone() });
+                    html! {
+                        <li onclick={callback}>{filename}</li>
+                    }
+                    })}
                 </ul>
             </>
-        }
-    }
-}
-
-impl Model {
-    fn item_view(&self, filename: &str) -> Html {
-        let n = filename.to_string();
-        html! {
-            <li onclick=self.link.callback(move |_| Msg::Play { filename: n.clone() })>{filename}</li>
         }
     }
 }
@@ -210,7 +221,7 @@ impl Model {
 pub fn run_app() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
 
-    App::<Model>::new().mount_to_body();
+    yew::start_app::<Model>();
 }
 
 #[cfg(test)]

@@ -153,9 +153,9 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
 
     let ws_thread = std::thread::spawn(move || -> tide::Result<()> {
         for batch in receiver {
-            async_std::task::block_on(async {
-                conn.send_json(&proto::WSEvent::FileChange(batch)).await
-            })?;
+            let msg = &proto::WSEvent::FileChange(batch);
+            let buf = serde_json::to_vec(&msg)?;
+            async_std::task::block_on(conn.send_bytes(buf))?;
         }
         Ok(())
     });
@@ -192,13 +192,13 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
             ws::Message::Pong(_) => {
                 // ignore
             }
-            ws::Message::Text(input) => {
-                let command: proto::WSCommand = match serde_json::from_str(&input) {
+            ws::Message::Binary(input) => {
+                let command: proto::WSCommand = match serde_json::from_slice(&input) {
                     Ok(cmd) => cmd,
                     Err(error) => {
                         debug!("websocket invalid JSON", {
                             error: log::kv::Value::capture_error(&error),
-                            input: input,
+                            input: format!("{:?}", input),
                         });
                         return Err(tide::Error::from_str(
                             StatusCode::BadRequest,
@@ -208,7 +208,7 @@ async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result
                 };
                 websocket_command(state, command).await;
             }
-            ws::Message::Binary(_) => {
+            ws::Message::Text(_) => {
                 debug!("websocket unexpected input");
                 return Err(tide::Error::from_str(StatusCode::BadRequest, "TODO"));
             }
