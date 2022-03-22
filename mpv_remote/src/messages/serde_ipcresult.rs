@@ -1,4 +1,3 @@
-use serde;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]

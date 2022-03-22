@@ -97,7 +97,7 @@ impl Config {
             task::Builder::new()
                 .name("mpv-ipc".to_string())
                 .spawn(async move { ipc.read_from_mpv().await })
-                .map_err(|e| StartError::SpawningTask(e))?
+                .map_err(StartError::SpawningTask)?
         };
 
         let mpv = MPV {
@@ -116,8 +116,7 @@ impl MPV {
 
     pub async fn events(&self) -> async_broadcast::Receiver<MPVEvent> {
         let guard = self.ipc.events_receiver.lock().await;
-        let r = guard.clone();
-        r
+        guard.clone()
     }
 }
 
@@ -154,7 +153,7 @@ impl IPCState {
                             .expect("internal error: broadcast channel cannot be closed yet");
                         // we're forced to keep one receiver just to be able to clone it on demand, but that means items are left buffered when idle. consume from that sender, just to clear room. https://github.com/smol-rs/async-broadcast/issues/2
                         let mut guard = self.events_receiver.lock().await;
-                        while let Ok(_) = guard.try_recv() {
+                        while guard.try_recv().is_ok() {
                             // nothing
                         }
                     }
@@ -174,7 +173,7 @@ impl IPCState {
                                 });
                             }
                             Some(sender) => {
-                                let result = response.result.map_err(|msg| IPCError::FromMPV(msg));
+                                let result = response.result.map_err(IPCError::FromMPV);
                                 debug!("sending result", {
                                     result: log::kv::Value::capture_debug(&result)
                                 });
@@ -219,16 +218,16 @@ impl MPV {
             let mut guard = self.ipc.pending.lock().await;
             guard.insert()
         };
-        if let Some(id) = id_option {
+        if let Some(request_id) = id_option {
             // send
             let wire_command = Command {
-                request_id: id,
-                command: command,
+                request_id,
+                command,
                 async_: true,
             };
             let mut wire_data =
-                serde_json::to_vec(&wire_command).map_err(|e| IPCError::JSONSerialize(e))?;
-            wire_data.push('\n' as u8);
+                serde_json::to_vec(&wire_command).map_err(IPCError::JSONSerialize)?;
+            wire_data.push(b'\n');
             debug!("sending command", {
                 // RUST-WART i can only get a numeric display out of this!
                 data: log::kv::Value::capture_debug(&wire_data),
@@ -237,7 +236,7 @@ impl MPV {
             guard
                 .write_all(&wire_data)
                 .await
-                .map_err(|e| IPCError::Network(e))?
+                .map_err(IPCError::Network)?
         }
         match receiver.await {
             Err(error) => match error {
@@ -269,12 +268,12 @@ impl MPV {
             let _ignore_kill_error = libc::kill(self.child.id() as i32, libc::SIGTERM);
         }
 
-        self.ipc_task.await.map_err(|e| CloseError::TaskError(e))?;
+        self.ipc_task.await.map_err(CloseError::TaskError)?;
         let exit_status = self
             .child
             .status()
             .await
-            .map_err(|e| CloseError::ProcessError(e))?;
+            .map_err(CloseError::ProcessError)?;
         if !exit_status.success() {
             return Err(CloseError::MPVExitStatus(exit_status));
         }

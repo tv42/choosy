@@ -160,7 +160,7 @@ where
         };
         let dec: Result<V, Enc::Error> = Enc::deserialize(&buf);
         match dec {
-            Err(error) => return Some(Err(GetError::Deserialize(error))),
+            Err(error) => Some(Err(GetError::Deserialize(error))),
             Ok(item) => Some(Ok((key, item))),
         }
     }

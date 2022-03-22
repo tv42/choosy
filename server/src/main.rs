@@ -4,15 +4,12 @@ use async_std::stream::StreamExt;
 use async_std::sync::Arc;
 use async_std::sync::Mutex;
 use async_std::task;
-use choosy_embed;
 use choosy_protocol as proto;
 use http_types::mime;
 #[allow(unused_imports)]
 use kv_log_macro::{debug, error, info, log, trace, warn};
 use listenfd::ListenFd;
 use mpv_remote::MPV;
-use scopeguard;
-use serde_json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -92,7 +89,7 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
 
                     // TODO Get rid of the batching, as we now stream events.
                     let batch = vec![proto::FileChange::Add {
-                        name: String::from_utf8_lossy(&key.as_ref()).into_owned(),
+                        name: String::from_utf8_lossy(key.as_ref()).into_owned(),
                     }];
                     sender.try_send(batch)?;
                 }
@@ -111,7 +108,7 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
         // Then send buffered events.
         {
             for (key, event) in buffered_events.into_iter() {
-                let name = String::from_utf8_lossy(&key.as_ref()).into_owned();
+                let name = String::from_utf8_lossy(key.as_ref()).into_owned();
                 let change = match event {
                     sleigh::Event::Insert { key: _, value } => {
                         if value.exists {
@@ -134,7 +131,7 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
             let event = result?;
             let change = match event {
                 sleigh::Event::Insert { key, value } => {
-                    let name = String::from_utf8_lossy(&key.as_ref()).into_owned();
+                    let name = String::from_utf8_lossy(key.as_ref()).into_owned();
                     if value.exists {
                         proto::FileChange::Add { name }
                     } else {
@@ -142,7 +139,7 @@ async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
                     }
                 }
                 sleigh::Event::Remove { key } => proto::FileChange::Del {
-                    name: String::from_utf8_lossy(&key.as_ref()).into_owned(),
+                    name: String::from_utf8_lossy(key.as_ref()).into_owned(),
                 },
             };
             let batch = vec![change];
@@ -295,18 +292,16 @@ async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
                 //
                 // Try to get something where self.playing is a data structure
                 // that "becomes None" when this task exits.
-                match previous {
-                    None => {
-                        // no idea how that happened
-                        debug!("internal error: playing is unexpectedly not set");
-                        return;
-                    }
-                    Some(mpv) => match mpv.close().await {
-                        Err(error) => warn!("mpv error", {
-                            error: log::kv::Value::capture_error(&error),
-                        }),
-                        Ok(_) => {}
-                    },
+                if previous.is_none() {
+                    // no idea how that happened
+                    debug!("internal error: playing is unexpectedly not set");
+                    return;
+                }
+                let mpv = previous.unwrap();
+                if let Err(error) = mpv.close().await {
+                    warn!("mpv error", {
+                        error: log::kv::Value::capture_error(&error),
+                    });
                 }
             });
         }
@@ -359,7 +354,7 @@ async fn main() -> anyhow::Result<()> {
                 let db = state.media.scan_prefix("");
                 let merge = itertools::merge_join_by(db, files, |result, file_path| match result {
                     Ok((key, _item)) => key.cmp(&sled::IVec::from(file_path.as_str())),
-                    Err(_) => return std::cmp::Ordering::Less,
+                    Err(_) => std::cmp::Ordering::Less,
                 });
                 for merged in merge {
                     // debug!("merge", { merged: log::kv::Value::capture_debug(&merged) });
@@ -429,7 +424,7 @@ async fn main() -> anyhow::Result<()> {
     let listener = fds
         .take_tcp_listener(0)
         .context("LISTEN_FDS must set up listening sockets")?
-        .ok_or(anyhow::anyhow!("LISTEN_FDS must have set up a TCP socket"))?;
+        .ok_or_else(|| anyhow::anyhow!("LISTEN_FDS must have set up a TCP socket"))?;
     app.listen(listener).await?;
     Ok(())
 }

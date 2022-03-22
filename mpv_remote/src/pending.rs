@@ -39,7 +39,7 @@ impl<T> Pending<T> {
             }
             None => {
                 drop(sender);
-                return (None, receiver);
+                (None, receiver)
             }
         }
     }

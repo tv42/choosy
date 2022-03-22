@@ -18,7 +18,7 @@ pub enum WebSocketError {
 #[derive(Debug)]
 pub enum WebSocketSendError {
     InvalidStateError(web_sys::DomException),
-    JSON(serde_json::Error),
+    Json(serde_json::Error),
 }
 
 pub struct WebSocket {
@@ -43,9 +43,9 @@ impl WebSocket {
         on_close: impl 'static + FnOnce(web_sys::CloseEvent),
         on_message: impl 'static + Fn(web_sys::MessageEvent),
     ) -> Result<Self, WebSocketError> {
-        return web_sys::WebSocket::new(url)
+        web_sys::WebSocket::new(url)
             .map_err(js_sys::SyntaxError::unchecked_from_js)
-            .map_err(|error| WebSocketError::BadUrl(error))
+            .map_err(WebSocketError::BadUrl)
             .map(|inner| -> WebSocket {
                 // TODO could use Blob and stream to serde_json
                 inner.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -71,17 +71,17 @@ impl WebSocket {
                     on_close,
                     on_message,
                 }
-            });
+            })
     }
 
     pub fn send_json<M: serde::ser::Serialize>(
         &self,
         message: M,
     ) -> Result<(), WebSocketSendError> {
-        let buf = serde_json::to_vec(&message).map_err(|error| WebSocketSendError::JSON(error))?;
+        let buf = serde_json::to_vec(&message).map_err(WebSocketSendError::Json)?;
         self.inner
             .send_with_u8_array(&buf)
             .map_err(web_sys::DomException::unchecked_from_js)
-            .map_err(|error| WebSocketSendError::InvalidStateError(error))
+            .map_err(WebSocketSendError::InvalidStateError)
     }
 }

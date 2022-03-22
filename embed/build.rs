@@ -143,7 +143,7 @@ fn main() -> Result<(), anyhow::Error> {
     println!("cargo:warning=see {}", out_dir);
 
     // this creates <wasm_out>/wasm.js & wasm_bg.wasm
-    let wasm_out = out_dir.to_owned() + "/wasm";
+    let wasm_out = out_dir + "/wasm";
     create_dir_if_not_exist(&wasm_out)?;
     let status = Command::new(wasm_bindgen)
         .args(&[

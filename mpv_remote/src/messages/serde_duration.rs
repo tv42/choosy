@@ -2,7 +2,6 @@
 //
 // https://serde.rs/custom-date-format.html
 
-use serde;
 use serde::Deserialize;
 use std::time;
 

@@ -1,7 +1,6 @@
 // TODO these types may be public, but they are most definitely not stable. exhaustive match arms will need updating regularly, and if we get Unknown variants working, things will move from Unknown to strongly-typed variants over time.
 
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::time;
 
 mod serde_duration;

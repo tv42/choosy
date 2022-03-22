@@ -9,11 +9,11 @@ fn is_interesting(entry: &DirEntry) -> bool {
         None => return false,
         Some(ext) => ext,
     };
-    // rust is being painful, Path::extension() is a Cow
-    match &*ext.to_string_lossy() {
-        "mkv" | "mp4" | "avi" | "ogm" | "wmv" | "m4v" | "rmvb" | "flv" | "mov" | "mpg" => true,
-        _ => false,
-    }
+    matches!(
+        // "" will never match anything we're interested in.
+        ext.to_str().unwrap_or(""),
+        "mkv" | "mp4" | "avi" | "ogm" | "wmv" | "m4v" | "rmvb" | "flv" | "mov" | "mpg"
+    )
 }
 
 pub fn scan(path: &Path) -> impl Iterator<Item = String> {
@@ -22,7 +22,7 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
     }
 
     let base = Arc::new(path.to_path_buf());
-    let walker = WalkDir::new(path)
+    WalkDir::new(path)
         .max_open(20)
         .same_file_system(true)
         .into_iter()
@@ -66,13 +66,12 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
             if !t.is_file() && !t.is_symlink() {
                 return false;
             }
-            if !is_interesting(&entry) {
+            if !is_interesting(entry) {
                 return false;
             }
             true
         })
         .filter_map({
-            let base = base.clone();
             move |entry| match entry.path().strip_prefix(&*base) {
                 Err(error) => {
                     log::warn!("file scanning found file in wrong subtree: {}", error);
@@ -84,6 +83,5 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
                     Some(p)
                 }
             }
-        });
-    walker
+        })
 }

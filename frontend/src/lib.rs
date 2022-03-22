@@ -200,7 +200,7 @@ impl Component for Model {
                     //
                     // https://github.com/yewstack/yew/issues/1851
                     value={self.search.clone()}
-                    oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or("".to_string())})}
+                    oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or_else(|| "".to_string())})}
                     style="width: 100%;"
                 />
                 <ul>
