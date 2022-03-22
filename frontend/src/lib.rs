@@ -192,18 +192,21 @@ impl Component for Model {
             .take(1000);
         html! {
             <>
-                <input
-                    placeholder="Search"
-                    // WAITING store self.search as Rc<str> to avoid
-                    // copying string contents on every view, needs
-                    // yew support
-                    //
-                    // https://github.com/yewstack/yew/issues/1851
-                    value={self.search.clone()}
-                    oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or_else(|| "".to_string())})}
-                    style="width: 100%;"
-                />
-                <ul>
+                <div style="position: sticky; top: 0;">
+                    <input
+                        placeholder="Search"
+                        // WAITING store self.search as Rc<str> to avoid
+                        // copying string contents on every view, needs
+                        // yew support
+                        //
+                        // https://github.com/yewstack/yew/issues/1851
+                        value={self.search.clone()}
+                        oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or_else(|| "".to_string())})}
+                        // border-box makes borders be within width, not outside it
+                        style="width: 100%;"
+                    />
+                </div>
+                <ul style="padding-right: 10px;">
                   {for entries.map(|(filename,_)| {
                     let tmp = filename.to_string();
                     let callback = ctx.link().callback(move |_| Msg::Play { filename: tmp.clone() });
