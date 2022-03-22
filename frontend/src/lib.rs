@@ -3,6 +3,7 @@
 
 use choosy_protocol as proto;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use yew::prelude::*;
@@ -19,7 +20,7 @@ mod console {
 struct Model {
     ws: Option<WebSocket>,
     ws_backoff: backoff::Backoff,
-    search: String,
+    search: Rc<str>,
     search_re: regex::Regex,
     files: BTreeMap<String, ()>,
 }
@@ -57,7 +58,7 @@ impl Component for Model {
         Self {
             ws: None,
             ws_backoff: backoff::Backoff::new(),
-            search: "".to_string(),
+            search: Rc::from(""),
             search_re: build_search_re(""),
             files: BTreeMap::new(),
         }
@@ -67,7 +68,7 @@ impl Component for Model {
         match msg {
             Msg::UpdateSearch { s } => {
                 self.search_re = build_search_re(&s);
-                self.search = s;
+                self.search = Rc::from(s);
             }
             Msg::WebSocketJsonParseError(error) => {
                 console::info!(&format!("error reading from server: {:?}", error));
@@ -199,12 +200,7 @@ impl Component for Model {
                 <div style="position: sticky; top: 0;">
                     <input
                         placeholder="Search"
-                        // WAITING store self.search as Rc<str> to avoid
-                        // copying string contents on every view, needs
-                        // yew support
-                        //
-                        // https://github.com/yewstack/yew/issues/1851
-                        value={self.search.clone()}
+                        value={yew::virtual_dom::AttrValue::from(self.search.clone())}
                         oninput={oninput}
                         // border-box makes borders be within width, not outside it
                         style="width: 100%;"
