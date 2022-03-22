@@ -149,7 +149,6 @@ impl Component for Model {
                             let buf = js_sys::Uint8Array::new(&array_buf).to_vec();
                             cb_message.emit(buf);
                         } else {
-                            // TODO maybe switch to ArrayBuffer (and maybe Blob too)?
                             console::error!("unexpected WebSocket message type", event.data());
                         }
                     };
