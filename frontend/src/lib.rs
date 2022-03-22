@@ -22,12 +22,12 @@ struct Model {
     ws_backoff: backoff::Backoff,
     search: Rc<str>,
     search_re: regex::Regex,
-    files: BTreeMap<String, ()>,
+    files: BTreeMap<Rc<str>, ()>,
 }
 
 enum Msg {
     UpdateSearch { s: String },
-    Play { filename: String },
+    Play { filename: Rc<str> },
     ConnectWebSocket,
     WebSocketOpened,
     WebSocketClosed,
@@ -82,10 +82,10 @@ impl Component for Model {
                                     self.files.clear();
                                 }
                                 proto::FileChange::Add { name } => {
-                                    self.files.insert(name, ());
+                                    self.files.insert(Rc::from(name), ());
                                 }
                                 proto::FileChange::Del { name } => {
-                                    self.files.remove(&name);
+                                    self.files.remove(&Rc::from(name));
                                 }
                             }
                         }
@@ -163,7 +163,9 @@ impl Component for Model {
                     ctx.link().send_message(Msg::ConnectWebSocket);
                 }
                 Some(ws) => {
-                    let cmd = proto::WSCommand::Play { filename };
+                    let cmd = proto::WSCommand::Play {
+                        filename: filename.to_string(),
+                    };
                     match ws.send_json(&cmd) {
                         Ok(_) => {}
                         Err(error) => {
@@ -207,8 +209,8 @@ impl Component for Model {
                     />
                 </div>
                 <ul style="padding-right: 10px;">
-                  {for entries.map(|(filename,_)| {
-                    let tmp = filename.to_string();
+                  {for entries.map(|(filename, _)| {
+                    let tmp = filename.clone();
                     let callback = ctx.link().callback(move |_| Msg::Play { filename: tmp.clone() });
                     html! {
                         <li onclick={callback}>{filename}</li>
