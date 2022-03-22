@@ -190,6 +190,11 @@ impl Component for Model {
             .filter(|(name, _)| self.search_re.is_match(name))
             // TODO relax this once the web UI agrees to be responsive enough
             .take(1000);
+        let oninput = ctx.link().callback(|event: InputEvent| {
+            let target = event.target().expect("oninput event must have target");
+            let search = target.unchecked_into::<web_sys::HtmlInputElement>().value();
+            Msg::UpdateSearch { s: search }
+        });
         html! {
             <>
                 <div style="position: sticky; top: 0;">
@@ -201,7 +206,7 @@ impl Component for Model {
                         //
                         // https://github.com/yewstack/yew/issues/1851
                         value={self.search.clone()}
-                        oninput={ctx.link().callback(|e: InputEvent| Msg::UpdateSearch{s: e.data().unwrap_or_else(|| "".to_string())})}
+                        oninput={oninput}
                         // border-box makes borders be within width, not outside it
                         style="width: 100%;"
                     />
