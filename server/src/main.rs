@@ -1,30 +1,22 @@
-#[allow(unused_imports)]
-use async_std::prelude::*;
-use async_std::stream::StreamExt;
-use async_std::sync::Arc;
-use async_std::sync::Mutex;
-use async_std::task;
+use axum::extract::Query;
+use axum::http::header::HeaderName;
+use axum::http::HeaderMap;
+use axum::http::HeaderValue;
+use axum::http::StatusCode;
+use axum::response::Html;
+use axum::Json;
 use choosy_protocol as proto;
-use http_types::mime;
-#[allow(unused_imports)]
-use kv_log_macro::{debug, error, info, log, trace, warn};
 use listenfd::ListenFd;
 use mpv_remote::MPV;
-use std::collections::{BTreeMap, BTreeSet};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use structopt::StructOpt;
 #[allow(unused_imports)]
-use tide::prelude::*;
-use tide::Body;
-use tide::Request;
-use tide::Response;
-use tide::StatusCode;
-
-mod ws {
-    // clean up import names
-    pub use tide_websockets::{Message, WebSocket as Handle, WebSocketConnection as Conn};
-}
+use tracing::{debug, error, info, log, trace, warn};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
 mod database;
@@ -37,275 +29,179 @@ struct File {}
 struct State {
     config: Config,
     media: database::MediaDb,
-    playing: Mutex<Option<MPV>>,
+    playing: tokio::sync::Mutex<Option<MPV>>,
 }
 
-async fn wasm_bg(_req: Request<Arc<State>>) -> tide::Result {
-    let mut resp = Response::new(StatusCode::Ok);
-    resp.set_content_type(mime::WASM);
-    resp.set_body(Body::from_reader(choosy_embed::wasm().clone(), None));
-    Ok(resp)
+async fn wasm_bg() -> (HeaderMap, &'static [u8]) {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("content-type"),
+        HeaderValue::from_static("application/wasm"),
+    );
+    (headers, choosy_embed::wasm())
 }
 
-async fn wasm_js(_req: Request<Arc<State>>) -> tide::Result {
-    let mut resp = Response::new(StatusCode::Ok);
-    resp.set_content_type(mime::JAVASCRIPT);
-    resp.set_body(Body::from_reader(choosy_embed::wasm_js(), None));
-    Ok(resp)
+async fn wasm_js() -> (HeaderMap, &'static [u8]) {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static("content-type"),
+        HeaderValue::from_static("application/javascript"),
+    );
+    (headers, choosy_embed::wasm_js())
 }
 
-async fn index_html(_req: Request<Arc<State>>) -> tide::Result {
-    let mut resp = Response::new(StatusCode::Ok);
-    resp.set_content_type(mime::HTML);
+async fn index_html() -> Html<&'static [u8]> {
     let bytes = include_bytes!("../../frontend/static/index.html");
-    resp.set_body(Body::from_bytes(bytes.to_vec()));
-    Ok(resp)
+    Html(bytes)
 }
 
-async fn ws_list_events(state: Arc<State>, conn: ws::Conn) -> tide::Result<()> {
-    // We need to start watching for changes before scanning the existing data, or we might miss an update.
-    // We need to send the existing data first, before processing watch events, to avoid races.
-    // However, subscriber must be consumed expediently or it will block database writers.
-    // Hence, we buffer the subscriber events while the initial scan is working.
-    // In this use case, we can coalesce the events by key.
-    // That might consume a lot of memory, but in this use case we're roughly bounded by the number of files changes noticed in one scan, which we assume we can already hold in memory elsewhere.
-    let mut subscriber = state.media.watch_prefix("");
+fn build_search_re(query: &str) -> regex::Regex {
+    let mut re = String::new();
+    for fragment in query.split_whitespace() {
+        if !re.is_empty() {
+            re.push_str(".*");
+        }
+        re.push_str(&regex::escape(fragment));
+    }
+    regex::RegexBuilder::new(&re)
+        .case_insensitive(true)
+        .build()
+        // silently match everything on trouble; there really shouldn't be any, as we're escaping the input
+        .unwrap_or_else(|_| regex::Regex::new("").unwrap())
+}
 
-    // Do sled tree watching in a separate thread, with a channel between them, to notice slow consumers and kick them out, instead of blocking the database.
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1000);
-    let events_thread = std::thread::spawn(move || -> Result<(), anyhow::Error> {
-        // TODO do i care about exact error? at least db error!
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+}
 
-        // TODO use iterator chaining here
+async fn handle_search(
+    state: Arc<State>,
+    query: Query<SearchQuery>,
+) -> Result<Json<proto::SearchResponse>, StatusCode> {
+    let search_re = build_search_re(&query.q);
 
-        let mut buffered_events = BTreeMap::new();
-
-        // First, scan the database for existing entries.
-        {
-            for result in state.media.scan_prefix("") {
-                let (key, item) = result?;
-                if item.exists {
-                    // Since this is the initial state dump, we don't need to send Del changes.
-
-                    // TODO Get rid of the batching, as we now stream events.
-                    let batch = vec![proto::FileChange::Add {
-                        name: String::from_utf8_lossy(key.as_ref()).into_owned(),
-                    }];
-                    sender.try_send(batch)?;
+    let iter = state
+        .media
+        .scan_prefix("")
+        .filter_map(|result| match result {
+            Err(error) => Some(Err(error)),
+            Ok((key, item)) => {
+                if !item.exists {
+                    return None;
                 }
 
-                // Pump the sled subscriber events to avoid blocking writers.
-                while let Ok(event) = subscriber.next_timeout(Duration::from_nanos(0)) {
-                    let key = match &event {
-                        sleigh::Event::Insert { key, .. } => key.clone(),
-                        sleigh::Event::Remove { key } => key.clone(),
-                    };
-                    buffered_events.insert(key, event);
+                let filename = String::from_utf8_lossy(key.as_ref()).into_owned();
+                if !search_re.is_match(&filename) {
+                    return None;
                 }
-            }
-        }
 
-        // Then send buffered events.
-        {
-            for (key, event) in buffered_events.into_iter() {
-                let name = String::from_utf8_lossy(key.as_ref()).into_owned();
-                let change = match event {
-                    sleigh::Event::Insert { key: _, value } => {
-                        if value.exists {
-                            proto::FileChange::Add { name }
-                        } else {
-                            proto::FileChange::Del { name }
-                        }
-                    }
-                    sleigh::Event::Remove { key: _ } => proto::FileChange::Del { name },
-                };
-                let batch = vec![change];
-                sender.try_send(batch)?;
+                let hit = proto::SearchResult { filename };
+                Some(Ok(hit))
             }
-        }
+        })
+        .take(1000);
+    let items: Result<
+        Vec<proto::SearchResult>,
+        sleigh::GetError<<sleigh::encoding::Bincode as sleigh::encoding::Encoding>::Error>,
+    > = iter.collect();
+    let items = items.map_err(|error| {
+        warn!(message = "database error", ?error);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let result = proto::SearchResponse { items };
+    Ok(Json(result))
+}
 
-        // Finally, stream events as they happen.
+async fn handle_play(
+    state: Arc<State>,
+    Json(input): Json<proto::PlayCommand>,
+) -> Result<(), StatusCode> {
+    let filename = input.filename;
+    debug!(message = "play file", %filename);
+    // Confirm that the file is in our state.files
+    let exists = match state.media.get(&filename).expect("database error") {
+        Some(item) => item.exists,
+        None => false,
+    };
+    if !exists {
+        // We might have removed the file concurrently, so this is not always an "attack".
+        warn!(message = "browser submitted invalid file", %filename);
+        return Ok(());
+    }
+    let mut events = {
+        let mut playing_guard = state.playing.lock().await;
+        if playing_guard.is_some() {
+            debug!("already playing");
+            // TODO shut down old player and start new?
+            // don't want to lose place, maybe always run with --save-position-on-quit
+            //
+            // if not above, then inform frontend of error? then again, maybe i should just make "is playing" state visible to it, not as response to this.
+            return Ok(());
+        }
+        let mut mpv_builder = MPV::builder();
+        mpv_builder.fullscreen(state.config.fullscreen);
+        let mpv_config = match mpv_builder.build() {
+            Ok(builder) => builder,
+            Err(error) => {
+                warn!(message = "error configuring MPV", ?error);
+                return Ok(());
+            }
+        };
+        // This is safe because we've confirmed the file is in our list of files, and that prevents hostile inputs.
         //
-        // If the client goes away, this may stick around until the next database mutation, which might not come in a long while.
-        for result in subscriber {
-            let event = result?;
-            let change = match event {
-                sleigh::Event::Insert { key, value } => {
-                    let name = String::from_utf8_lossy(key.as_ref()).into_owned();
-                    if value.exists {
-                        proto::FileChange::Add { name }
-                    } else {
-                        proto::FileChange::Del { name }
+        // TODO Currently, validation checks that they are currently included in our known files, which is racy.
+        //
+        // RUST-WART No clean way to lexically prevent "/evil", "../evil" without reading symlinks and whatnot?
+        let mut path = PathBuf::new();
+        path.push(&state.config.path);
+        path.push(&filename);
+        let path = path.into_os_string();
+        let mpv = match mpv_config.play(&path) {
+            Ok(mpv) => mpv,
+            Err(error) => {
+                warn!(message = "cannot play media", %filename, ?error);
+                return Ok(());
+            }
+        };
+        let events = mpv.events().await;
+        *playing_guard = Some(mpv);
+        events
+    };
+
+    let state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => debug!(message = "mpv event", ?event),
+                Err(error) => match error {
+                    tokio::sync::broadcast::error::RecvError::Closed => break,
+                    tokio::sync::broadcast::error::RecvError::Lagged(count) => {
+                        debug!(message = "mpv events receiver lagged", count);
+                        break;
                     }
-                }
-                sleigh::Event::Remove { key } => proto::FileChange::Del {
-                    name: String::from_utf8_lossy(key.as_ref()).into_owned(),
                 },
-            };
-            let batch = vec![change];
-            sender.try_send(batch)?;
+            }
         }
-        Ok(())
-    });
 
-    let ws_thread = std::thread::spawn(move || -> tide::Result<()> {
-        for batch in receiver {
-            let msg = &proto::WSEvent::FileChange(batch);
-            let buf = serde_json::to_vec(&msg)?;
-            async_std::task::block_on(conn.send_bytes(buf))?;
+        let mut playing_guard = state.playing.lock().await;
+        // unset playing and return old value, so we can consume it in close
+        let previous = std::mem::replace(&mut *playing_guard, None);
+        // TODO nothing says it's still the *same* mpv; this is brittle.
+        //
+        // Try to get something where self.playing is a data structure
+        // that "becomes None" when this task exits.
+        if previous.is_none() {
+            // no idea how that happened
+            debug!("internal error: playing is unexpectedly not set");
+            return;
         }
-        Ok(())
+        let mpv = previous.unwrap();
+        if let Err(error) = mpv.close().await {
+            warn!(message = "mpv error", ?error);
+        }
     });
-
-    events_thread
-        .join()
-        .expect("internal error: thread join error")?;
-    ws_thread
-        .join()
-        .expect("internal error: thread join error")?;
     Ok(())
-}
-
-async fn websocket(req: tide::Request<Arc<State>>, mut conn: ws::Conn) -> Result<(), tide::Error> {
-    let state = req.state();
-    let list_events = task::Builder::new()
-        .name("ws_list_events".to_string())
-        .spawn(ws_list_events(state.clone(), conn.clone()))?;
-    let _list_events_guard = scopeguard::guard((), |_| {
-        // without explicit cancellation, the websocket is kept alive even after garbage input by the outgoing events
-
-        // jump through hoops to call an async thing in a non-async context
-        task::Builder::new()
-            .name("ws_list_events cancel".to_string())
-            .spawn(async { list_events.cancel().await })
-            .unwrap();
-    });
-
-    while let Some(Ok(msg)) = conn.next().await {
-        match msg {
-            ws::Message::Ping(_) | ws::Message::Close(_) => {
-                // handled automatically by lower levels
-            }
-            ws::Message::Pong(_) => {
-                // ignore
-            }
-            ws::Message::Binary(input) => {
-                let command: proto::WSCommand = match serde_json::from_slice(&input) {
-                    Ok(cmd) => cmd,
-                    Err(error) => {
-                        debug!("websocket invalid JSON", {
-                            error: log::kv::Value::capture_error(&error),
-                            input: format!("{:?}", input),
-                        });
-                        return Err(tide::Error::from_str(
-                            StatusCode::BadRequest,
-                            "invalid JSON",
-                        ));
-                    }
-                };
-                websocket_command(state, command).await;
-            }
-            ws::Message::Text(_) => {
-                debug!("websocket unexpected input");
-                return Err(tide::Error::from_str(StatusCode::BadRequest, "TODO"));
-            }
-        }
-    }
-    debug!("websocket end of stream");
-    Ok(())
-}
-
-async fn websocket_command(state: &Arc<State>, command: proto::WSCommand) {
-    // don't sleep for long, this blocks websocket message reading (to prevent command reordering)
-    match command {
-        proto::WSCommand::Play { filename } => {
-            debug!("play file", { filename: filename });
-            // Confirm that the file is in our state.files
-            let exists = match state.media.get(&filename).expect("database error") {
-                Some(item) => item.exists,
-                None => false,
-            };
-            if !exists {
-                // We might have removed the file concurrently, so this is not always an "attack".
-                warn!("browser submitted invalid file", {
-                    filename: &filename,
-                });
-                return;
-            }
-            let mut events = {
-                let mut playing_guard = state.playing.lock().await;
-                if playing_guard.is_some() {
-                    debug!("already playing");
-                    // TODO shut down old player and start new?
-                    // don't want to lose place, maybe always run with --save-position-on-quit
-                    //
-                    // if not above, then inform frontend of error? then again, maybe i should just make "is playing" state visible to it, not as response to this.
-                    return;
-                }
-                let mut mpv_builder = MPV::builder();
-                mpv_builder.fullscreen(state.config.fullscreen);
-                let mpv_config = match mpv_builder.build() {
-                    Ok(builder) => builder,
-                    Err(error) => {
-                        warn!("error configuring MPV", {
-                            error: log::kv::Value::capture_error(&error),
-                        });
-                        return;
-                    }
-                };
-                // This is safe because we've confirmed the file is in our list of files, and that prevents hostile inputs.
-                //
-                // TODO Currently, validation checks that they are currently included in our known files, which is racy.
-                //
-                // RUST-WART No clean way to lexically prevent "/evil", "../evil" without reading symlinks and whatnot?
-                let mut path = PathBuf::new();
-                path.push(&state.config.path);
-                path.push(&filename);
-                let path = path.into_os_string();
-                let mpv = match mpv_config.play(&path) {
-                    Ok(mpv) => mpv,
-                    Err(error) => {
-                        warn!("cannot play media", {
-                            filename: filename,
-                            error: log::kv::Value::capture_error(&error),
-                        });
-                        return;
-                    }
-                };
-                let events = mpv.events().await;
-                *playing_guard = Some(mpv);
-                events
-            };
-
-            let state = state.clone();
-            task::spawn(async move {
-                while let Some(event) = events.next().await {
-                    debug!("mpv event", {
-                        event: log::kv::Value::capture_debug(&event),
-                    });
-                }
-
-                let mut playing_guard = state.playing.lock().await;
-                // unset playing and return old value, so we can consume it in close
-                let previous = std::mem::replace(&mut *playing_guard, None);
-                // TODO nothing says it's still the *same* mpv; this is brittle.
-                //
-                // Try to get something where self.playing is a data structure
-                // that "becomes None" when this task exits.
-                if previous.is_none() {
-                    // no idea how that happened
-                    debug!("internal error: playing is unexpectedly not set");
-                    return;
-                }
-                let mpv = previous.unwrap();
-                if let Err(error) = mpv.close().await {
-                    warn!("mpv error", {
-                        error: log::kv::Value::capture_error(&error),
-                    });
-                }
-            });
-        }
-    }
 }
 
 #[derive(structopt::StructOpt, Debug)]
@@ -324,11 +220,16 @@ struct Opt {
     database: PathBuf,
 }
 
-#[async_std::main]
-async fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
     use anyhow::Context;
 
-    tide::log::with_level(tide::log::LevelFilter::Debug);
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "choosy=debug,tower_http=debug".into()),
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
 
     let opt = Opt::from_args();
     let config = Config::load(opt.config).context("error loading config file")?;
@@ -340,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(State {
         config: config.clone(),
         media,
-        playing: Mutex::new(None),
+        playing: tokio::sync::Mutex::new(None),
     });
 
     let _file_scanner = {
@@ -360,9 +261,7 @@ async fn main() -> anyhow::Result<()> {
                     // debug!("merge", { merged: log::kv::Value::capture_debug(&merged) });
                     use itertools::EitherOrBoth::*;
                     match merged {
-                        Left(Err(error)) => warn!("file scanner: database error", {
-                            error: log::kv::Value::capture_error(&error),
-                        }),
+                        Left(Err(error)) => warn!(message = "file scanner: database error", ?error),
                         Left(Ok((key, item))) => {
                             // Found in database, not on filesystem.
                             if item.exists {
@@ -371,9 +270,9 @@ async fn main() -> anyhow::Result<()> {
                                     .merge(key, &vec![database::media::Op::Exists(false)]);
                                 match result {
                                     Ok(_) => (),
-                                    Err(error) => warn!("file scanner: database error", {
-                                        error: log::kv::Value::capture_error(&error),
-                                    }),
+                                    Err(error) => {
+                                        warn!(message = "file scanner: database error", ?error)
+                                    }
                                 }
                             }
                         }
@@ -384,14 +283,14 @@ async fn main() -> anyhow::Result<()> {
                                 .merge(file_path, &vec![database::media::Op::Exists(true)]);
                             match result {
                                 Ok(_) => (),
-                                Err(error) => warn!("file scanner: database error", {
-                                    error: log::kv::Value::capture_error(&error),
-                                }),
+                                Err(error) => {
+                                    warn!(message = "file scanner: database error", ?error)
+                                }
                             }
                         }
-                        Both(Err(error), _) => warn!("file scanner: database error", {
-                            error: log::kv::Value::capture_error(&error),
-                        }),
+                        Both(Err(error), _) => {
+                            warn!(message = "file scanner: database error", ?error)
+                        }
                         Both(Ok((key, item)), _file_path) => {
                             // Found in both; ensure database says exists=true.
                             if !item.exists {
@@ -400,9 +299,9 @@ async fn main() -> anyhow::Result<()> {
                                     .merge(key, &vec![database::media::Op::Exists(true)]);
                                 match result {
                                     Ok(_) => (),
-                                    Err(error) => warn!("file scanner: database error", {
-                                        error: log::kv::Value::capture_error(&error),
-                                    }),
+                                    Err(error) => {
+                                        warn!(message = "file scanner: database error", ?error)
+                                    }
                                 }
                             }
                         }
@@ -414,17 +313,35 @@ async fn main() -> anyhow::Result<()> {
         })
     };
 
-    let mut app = tide::with_state(state);
-    app.at("/choosy_frontend_bg.wasm").get(wasm_bg);
-    app.at("/choosy_frontend.js").get(wasm_js);
-    app.at("/").get(index_html);
-    app.at("/ws").get(ws::Handle::new(websocket));
+    use axum::routing::{get, post};
+    let app = axum::Router::new()
+        .route("/choosy_frontend_bg.wasm", get(wasm_bg))
+        .route("/choosy_frontend.js", get(wasm_js))
+        .route("/", get(index_html))
+        .route(
+            "/search",
+            get({
+                let state = Arc::clone(&state);
+                move |query| handle_search(state, query)
+            }),
+        )
+        .route(
+            "/play",
+            post({
+                let state = Arc::clone(&state);
+                move |input| handle_play(state, input)
+            }),
+        )
+        .layer(tower_http::trace::TraceLayer::new_for_http());
 
     let mut fds = ListenFd::from_env();
     let listener = fds
         .take_tcp_listener(0)
         .context("LISTEN_FDS must set up listening sockets")?
         .ok_or_else(|| anyhow::anyhow!("LISTEN_FDS must have set up a TCP socket"))?;
-    app.listen(listener).await?;
+
+    axum::Server::from_tcp(listener)?
+        .serve(app.into_make_service())
+        .await?;
     Ok(())
 }

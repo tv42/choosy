@@ -1,21 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum WSEvent {
-    FileChange(Vec<FileChange>),
+pub struct SearchResult {
+    pub filename: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum FileChange {
-    ClearAll,
-    Add { name: String },
-    Del { name: String },
+pub struct SearchResponse {
+    pub items: Vec<SearchResult>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum WSCommand {
-    Play { filename: String },
+pub struct PlayCommand {
+    pub filename: String,
 }

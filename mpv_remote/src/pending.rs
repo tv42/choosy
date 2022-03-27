@@ -80,7 +80,7 @@ impl<T> Pending<T> {
 mod tests {
     use super::*;
 
-    #[async_std::test]
+    #[tokio::test]
     async fn simultaneous() {
         let mut p: Pending<String> = Pending::new();
         let (id1_option, mut recv1) = p.insert();
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(recv1.try_recv(), Ok(Some("one".to_string())));
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn close_sends_goodbye() {
         let mut p: Pending<String> = Pending::new();
         let (_, mut recv1) = p.insert();
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(recv2.try_recv(), Err(oneshot::Canceled));
     }
 
-    #[async_std::test]
+    #[tokio::test]
     async fn insert_after_close() {
         let mut p: Pending<String> = Pending::new();
 

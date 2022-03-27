@@ -1,19 +1,12 @@
-use async_std::io;
-use async_std::os::unix::net::UnixStream;
-#[allow(unused_imports)]
-use async_std::prelude::*;
-use async_std::process;
-use async_std::sync::Mutex;
-use async_std::task;
 use derive_builder::Builder;
 use futures_channel::oneshot;
 #[allow(unused_imports)]
-use kv_log_macro::{debug, error, info, log, trace, warn};
+use tracing::{debug, error, info, log, trace, warn};
 // WAITING incorrect error from rust-analyzer https://github.com/rust-analyzer/rust-analyzer/issues/6038
-use std::os::unix::io::FromRawFd;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::{ffi::OsStr, sync::Arc};
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 mod messages;
 pub use self::messages::*;
@@ -29,44 +22,39 @@ pub struct Config {
 
 // MPV runs the mpv video player in a subprocess and observes the playback progress.
 pub struct MPV {
-    child: process::Child,
+    child: tokio::process::Child,
     ipc: Arc<IPCState>,
-    ipc_task: task::JoinHandle<Result<(), io::Error>>,
+    ipc_task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
 }
 
 // separate state needed by read_from_mpv so that MPV doesn't end up in cyclic reference hell where the value for ipc_task depends on MPV. it was either this or Option<task::JoinHandle<...>> and this was less ugly.
 struct IPCState {
-    read_socket: UnixStream,
-    write_socket: Arc<Mutex<UnixStream>>,
-    pending: Arc<Mutex<Pending<IPCResult>>>,
-    events_sender: async_broadcast::Sender<MPVEvent>,
-    // Receiver.recv is a &mut self method, but IPCState::read_from_mpv needs to run concurrently with MPV::events, so lock around it. Locking around clone is unnecessary but too hard to avoid.
-    events_receiver: Arc<Mutex<async_broadcast::Receiver<MPVEvent>>>,
+    write_socket: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    pending: Arc<tokio::sync::Mutex<Pending<IPCResult>>>,
+    events_sender: std::sync::Weak<tokio::sync::broadcast::Sender<MPVEvent>>,
 }
 
 #[derive(Error, Debug)]
 pub enum StartError {
     #[error("socket create error: {0}")]
     SocketCreate(std::io::Error),
-    #[error("task spawning error: {0}")]
-    SpawningTask(std::io::Error),
     #[error("starting MPV: {0}")]
     StartingMPV(std::io::Error),
 }
 
 impl Config {
     pub fn play(&self, path: &OsStr) -> Result<MPV, StartError> {
-        let (socket, child_socket) = match UnixStream::pair() {
+        let (socket, child_socket) = match tokio::net::UnixStream::pair() {
             Ok(pair) => pair,
             Err(error) => return Err(StartError::SocketCreate(error)),
         };
 
         // RUST-WART I find it hard to believe that Rust does not offer any mechanism to pass a UnixStream to a child process as an fd, without resorting to unsafe.
         let child_file = unsafe {
-            let child_fd = child_socket.into_raw_fd();
+            let child_fd = child_socket.as_raw_fd();
             std::fs::File::from_raw_fd(child_fd)
         };
-        let mut cmd = process::Command::new("mpv");
+        let mut cmd = tokio::process::Command::new("mpv");
         cmd
             // RUST-WART I seem to be unable to pass FDs other than 0/1/2, without managing the fork+exec myself?
             .arg("--input-ipc-client=fd://0")
@@ -81,23 +69,25 @@ impl Config {
             Ok(proc) => proc,
             Err(error) => return Err(StartError::StartingMPV(error)),
         };
+        // Ensure the FD lives past the fork.
+        drop(child_socket);
 
-        let pending = Arc::new(Mutex::new(Pending::new() as Pending<IPCResult>));
-        let (events_sender, events_receiver) = async_broadcast::broadcast(100);
+        let pending = Arc::new(tokio::sync::Mutex::new(Pending::new() as Pending<IPCResult>));
+        let (events_sender, events_receiver) = tokio::sync::broadcast::channel(100);
+        let events_sender = Arc::new(events_sender);
 
+        let (socket_reader, socket_writer) = socket.into_split();
         let ipc = Arc::new(IPCState {
-            read_socket: socket.clone(),
-            write_socket: Arc::new(Mutex::new(socket)),
+            write_socket: Arc::new(tokio::sync::Mutex::new(socket_writer)),
             pending,
-            events_sender,
-            events_receiver: Arc::new(Mutex::new(events_receiver)),
+            events_sender: Arc::downgrade(&events_sender),
         });
         let ipc_task = {
             let ipc = ipc.clone();
-            task::Builder::new()
-                .name("mpv-ipc".to_string())
-                .spawn(async move { ipc.read_from_mpv().await })
-                .map_err(StartError::SpawningTask)?
+            tokio::task::spawn(async move {
+                ipc.read_from_mpv(socket_reader, events_receiver, events_sender)
+                    .await
+            })
         };
 
         let mpv = MPV {
@@ -114,9 +104,16 @@ impl MPV {
         ConfigBuilder::default()
     }
 
-    pub async fn events(&self) -> async_broadcast::Receiver<MPVEvent> {
-        let guard = self.ipc.events_receiver.lock().await;
-        guard.clone()
+    pub async fn events(&self) -> tokio::sync::broadcast::Receiver<MPVEvent> {
+        match self.ipc.events_sender.upgrade() {
+            Some(sender) => sender.subscribe(),
+            None => {
+                // trying to subscribe after mpv has already exited.
+                // make a dummy channel and close it.
+                let (sender, _receiver) = tokio::sync::broadcast::channel(1);
+                sender.subscribe()
+            }
+        }
     }
 }
 
@@ -127,7 +124,7 @@ pub enum IPCError {
     #[error("JSON serialization: {0}")]
     JSONSerialize(serde_json::Error),
     #[error("network: {0}")]
-    Network(io::Error),
+    Network(std::io::Error),
     #[error("disconnected")]
     Disconnected,
 }
@@ -136,56 +133,56 @@ pub enum IPCError {
 pub type IPCResult = Result<serde_json::Value, IPCError>;
 
 impl IPCState {
-    async fn read_from_mpv(&self) -> io::Result<()> {
-        let reader = io::BufReader::new(&self.read_socket);
+    async fn read_from_mpv(
+        &self,
+        read_socket: tokio::net::unix::OwnedReadHalf,
+        mut events_receiver: tokio::sync::broadcast::Receiver<MPVEvent>,
+        events_sender: Arc<tokio::sync::broadcast::Sender<MPVEvent>>,
+    ) -> tokio::io::Result<()> {
+        let reader = tokio::io::BufReader::new(read_socket);
         let mut lines = reader.lines();
-        while let Some(line) = lines.next().await {
-            let line = line?;
+        while let Some(line) = lines.next_line().await? {
             match serde_json::from_str::<MPVEnvelope>(&line) {
                 Ok(env) => match env {
                     MPVEnvelope::Event(event) => {
-                        debug!("mpv event", {
-                            event: log::kv::Value::capture_debug(&event)
-                        });
-                        self.events_sender
-                            .broadcast(event)
-                            .await
+                        debug!(message = "mpv event", ?event);
+                        events_sender
+                            .send(event)
                             .expect("internal error: broadcast channel cannot be closed yet");
-                        // we're forced to keep one receiver just to be able to clone it on demand, but that means items are left buffered when idle. consume from that sender, just to clear room. https://github.com/smol-rs/async-broadcast/issues/2
-                        let mut guard = self.events_receiver.lock().await;
-                        while guard.try_recv().is_ok() {
+                        // we're forced to keep one receiver just to be able to clone it on demand, but that means items are left buffered when idle.
+                        // consume from that sender, just to clear room.
+                        // https://github.com/smol-rs/async-broadcast/issues/2 & https://docs.rs/tokio/1.17.0/tokio/sync/broadcast/fn.channel.html
+                        while events_receiver.try_recv().is_ok() {
                             // nothing
                         }
                     }
                     MPVEnvelope::Response(response) => {
-                        debug!("mpv response", {
-                            response: log::kv::Value::capture_debug(&response)
-                        });
+                        debug!(message = "mpv response", ?response);
                         let waiting = {
                             let mut guard = self.pending.lock().await;
                             guard.get(response.request_id)
                         };
                         match waiting {
                             None => {
-                                error!("unrecognized id from MPV", {
-                                    request_id: response.request_id,
-                                    response: log::kv::Value::capture_debug(&response)
-                                });
+                                error!(
+                                    message = "unrecognized id from MPV",
+                                    request_id = response.request_id,
+                                    ?response,
+                                );
                             }
                             Some(sender) => {
                                 let result = response.result.map_err(IPCError::FromMPV);
-                                debug!("sending result", {
-                                    result: log::kv::Value::capture_debug(&result)
-                                });
+                                debug!(message = "sending result", ?result);
                                 match sender.send(result) {
                                     Ok(()) => {
-                                        debug!("successfully sent!");
+                                        debug!(message = "successfully sent!");
                                     }
                                     Err(payload) => {
-                                        debug!("MPV command unexpectedly canceled early", {
-                                            request_id: response.request_id,
-                                            result: log::kv::Value::capture_debug(&payload),
-                                        });
+                                        debug!(
+                                            message = "MPV command unexpectedly canceled early",
+                                            request_id = response.request_id,
+                                            result = ?payload,
+                                        );
                                     }
                                 }
                             }
@@ -193,10 +190,7 @@ impl IPCState {
                     }
                 },
                 Err(error) => {
-                    debug!("unrecognized mpv message", {
-                        error: log::kv::Value::capture_error(&error),
-                        json: line,
-                    });
+                    debug!(message = "unrecognized mpv message", ?error, json = %line);
                 }
             }
         }
@@ -206,7 +200,7 @@ impl IPCState {
             let mut guard = self.pending.lock().await;
             guard.close();
         }
-        self.events_sender.close();
+        drop(events_sender);
 
         Ok(())
     }
@@ -225,13 +219,12 @@ impl MPV {
                 command,
                 async_: true,
             };
+            debug!(message="sending command",
+                command=?wire_command,
+            );
             let mut wire_data =
                 serde_json::to_vec(&wire_command).map_err(IPCError::JSONSerialize)?;
             wire_data.push(b'\n');
-            debug!("sending command", {
-                // RUST-WART i can only get a numeric display out of this!
-                data: log::kv::Value::capture_debug(&wire_data),
-            });
             let mut guard = self.ipc.write_socket.lock().await;
             guard
                 .write_all(&wire_data)
@@ -250,11 +243,13 @@ impl MPV {
 #[derive(Error, Debug)]
 pub enum CloseError {
     #[error("task spawning error: {0}")]
-    TaskError(std::io::Error),
+    TaskError(tokio::task::JoinError),
+    #[error("IPC worker error: {0}")]
+    IpcError(std::io::Error),
     #[error("process error: {0}")]
     ProcessError(std::io::Error),
     #[error("MPV exited with error: {0}")]
-    MPVExitStatus(process::ExitStatus),
+    MPVExitStatus(std::process::ExitStatus),
 }
 
 impl MPV {
@@ -265,15 +260,16 @@ impl MPV {
         //
         // let _ignore_kill_error = self.child.kill();
         unsafe {
-            let _ignore_kill_error = libc::kill(self.child.id() as i32, libc::SIGTERM);
+            if let Some(id) = self.child.id() {
+                let _ignore_kill_error = libc::kill(id as i32, libc::SIGTERM);
+            }
         }
 
-        self.ipc_task.await.map_err(CloseError::TaskError)?;
-        let exit_status = self
-            .child
-            .status()
+        self.ipc_task
             .await
-            .map_err(CloseError::ProcessError)?;
+            .map_err(CloseError::TaskError)?
+            .map_err(CloseError::IpcError)?;
+        let exit_status = self.child.wait().await.map_err(CloseError::ProcessError)?;
         if !exit_status.success() {
             return Err(CloseError::MPVExitStatus(exit_status));
         }

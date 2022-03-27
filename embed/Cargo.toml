@@ -4,9 +4,6 @@ version = "0.1.0"
 authors = ["Tommi Virtanen <tv@eagain.net>"]
 edition = "2018"
 
-[dependencies]
-async-std = { version = "1.10.0", features = ["attributes", "unstable"] }
-
 [build-dependencies]
 anyhow = "1.0.56"
 cargo_metadata = "0.14.2"

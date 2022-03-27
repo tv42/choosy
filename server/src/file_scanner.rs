@@ -1,7 +1,8 @@
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::Arc;
-use tide::log;
+#[allow(unused_imports)]
+use tracing::{debug, error, info, log, trace, warn};
 use walkdir::{DirEntry, WalkDir};
 
 fn is_interesting(entry: &DirEntry) -> bool {
@@ -35,7 +36,10 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
                 return false;
             }
             if entry.file_name().to_str().is_none() {
-                log::warn!("ignoring non-UTF-8 filename: {:?}", entry.path());
+                warn!(
+                    message = "ignoring non-UTF-8 filename",
+                    filename = ?entry.path()
+                );
                 return false;
             }
             true
@@ -56,7 +60,7 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
                     return None;
                 }
 
-                log::warn!("file scanning error: {}", error);
+                warn!(message = "file scanning error", ?error);
                 None
             }
             Ok(entry) => Some(entry),
@@ -74,7 +78,10 @@ pub fn scan(path: &Path) -> impl Iterator<Item = String> {
         .filter_map({
             move |entry| match entry.path().strip_prefix(&*base) {
                 Err(error) => {
-                    log::warn!("file scanning found file in wrong subtree: {}", error);
+                    warn!(
+                        message = "file scanning found file in wrong subtree",
+                        ?error
+                    );
                     None
                 }
                 Ok(relative) => {

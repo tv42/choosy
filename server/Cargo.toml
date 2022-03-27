@@ -6,15 +6,14 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0.56"
-async-std = { version = "1.10.0", features = ["attributes", "unstable"] }
+axum = "0.4.8"
 choosy_embed = { path = "../embed" }
 choosy_protocol = { path = "../protocol" }
-http-types = "2.12.0"
+futures = "0.3.21"
 itertools = "0.10.3"
-kv-log-macro = "1.0.7"
 listenfd = "0.5.0"
-log = { version = "0.4.14", features = ["kv_unstable", "kv_unstable_std"] }
 mpv_remote = { path = "../mpv_remote" }
+regex = "1.5.5"
 ron = "0.7.0"
 scopeguard = "1.1.0"
 serde = { version = "1.0.136", features = ["derive"] }
@@ -23,6 +22,8 @@ sled = "0.34.7"
 sleigh = { path = "../sleigh" }
 structopt = "0.3.26"
 thiserror = "1.0.30"
-tide = "0.16.0"
-tide-websockets = "0.4.0"
+tokio = { version = "1.17.0", features = ["rt-multi-thread", "macros"] }
+tower-http = { version = "0.2.5", features = ["trace"] }
+tracing = "0.1.32"
+tracing-subscriber = { version = "0.3.9", features = ["fmt", "env-filter"] }
 walkdir = "2.3.2"

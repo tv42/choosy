@@ -1,4 +1,3 @@
-use async_std::io;
 use serde::Deserialize;
 use std::fs::File;
 use std::path::Path;
@@ -22,7 +21,7 @@ pub enum ConfigError {
     #[error("error reading: {source}")]
     IO {
         #[from]
-        source: io::Error,
+        source: std::io::Error,
     },
     #[error("error parsing: {source}")]
     Parse {

@@ -2,200 +2,128 @@
 #![recursion_limit = "256"]
 
 use choosy_protocol as proto;
+use gloo_net::http::Request;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use tracing::{error, info};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use yew::prelude::*;
 
-mod backoff;
-
-mod websocket;
-use self::websocket::WebSocket;
-
-mod console {
-    pub use weblog::{console_error as error, console_info as info};
-}
-
 struct Model {
-    ws: Option<WebSocket>,
-    ws_backoff: backoff::Backoff,
     search: Rc<str>,
-    search_re: regex::Regex,
     files: BTreeMap<Rc<str>, ()>,
 }
 
 enum Msg {
-    UpdateSearch { s: String },
-    Play { filename: Rc<str> },
-    ConnectWebSocket,
-    WebSocketOpened,
-    WebSocketClosed,
-    WebSocketJsonParseError(serde_json::Error),
-    FromServer(proto::WSEvent),
+    UpdateSearch {
+        search: Rc<str>,
+    },
+    SearchResult {
+        result: Result<proto::SearchResponse, gloo_net::Error>,
+    },
+    Play {
+        filename: Rc<str>,
+    },
 }
 
-fn build_search_re(query: &str) -> regex::Regex {
-    let mut re = String::new();
-    for fragment in query.split_whitespace() {
-        if !re.is_empty() {
-            re.push_str(".*");
-        }
-        re.push_str(&regex::escape(fragment));
-    }
-    regex::RegexBuilder::new(&re)
-        .case_insensitive(true)
-        .build()
-        // silently match everything on trouble; there really shouldn't be any, as we're escaping the input
-        .unwrap_or_else(|_| regex::Regex::new("").unwrap())
+fn build_url(relative: &str) -> Result<web_sys::Url, JsValue> {
+    let base_url = {
+        let window = web_sys::window().expect("must have JS window");
+        let document = window.document().expect("must have JS document");
+        let location = document.location().expect("must have JS document.location");
+        location
+            .href()
+            .expect("must have JS document.location.href")
+    };
+    web_sys::Url::new_with_base(relative, &base_url)
+}
+
+fn build_search_url(search: &str) -> String {
+    let url = build_url("/search").expect("programmer error: hardcoded URL is invalid");
+    let query = url.search_params();
+    query.set("q", search);
+    url.set_search(
+        &query
+            .to_string()
+            .as_string()
+            .expect("internal error: bad URL query stringification"),
+    );
+    url.to_string()
+        .as_string()
+        .expect("internal error: bad URL stringification")
+}
+
+fn build_play_url() -> String {
+    let url = build_url("/play").expect("programmer error: hardcoded URL is invalid");
+    url.to_string()
+        .as_string()
+        .expect("internal error: bad URL stringification")
 }
 
 impl Component for Model {
     type Message = Msg;
     type Properties = ();
+
     fn create(ctx: &Context<Self>) -> Self {
-        ctx.link().send_message(Msg::ConnectWebSocket);
-        Self {
-            ws: None,
-            ws_backoff: backoff::Backoff::new(),
+        ctx.link().send_message(Msg::UpdateSearch {
             search: Rc::from(""),
-            search_re: build_search_re(""),
+        });
+        Self {
+            search: Rc::from(""),
             files: BTreeMap::new(),
         }
     }
 
     fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
-            Msg::UpdateSearch { s } => {
-                self.search_re = build_search_re(&s);
-                self.search = Rc::from(s);
-            }
-            Msg::WebSocketJsonParseError(error) => {
-                console::info!(&format!("error reading from server: {:?}", error));
-            }
-            Msg::FromServer(msg) => {
-                match msg {
-                    proto::WSEvent::FileChange(changes) => {
-                        for change in changes {
-                            match change {
-                                proto::FileChange::ClearAll => {
-                                    self.files.clear();
-                                }
-                                proto::FileChange::Add { name } => {
-                                    self.files.insert(Rc::from(name), ());
-                                }
-                                proto::FileChange::Del { name } => {
-                                    self.files.remove(&Rc::from(name));
-                                }
-                            }
+            Msg::UpdateSearch { search } => {
+                self.search = search.clone();
+                ctx.link().send_future(async move {
+                    let result = {
+                        let url = build_search_url(&search);
+                        let resp = Request::get(&url).send().await;
+                        match resp {
+                            Ok(response) => response.json::<proto::SearchResponse>().await,
+                            Err(error) => Err(error),
                         }
+                    };
+                    Msg::SearchResult { result }
+                });
+            }
+
+            Msg::SearchResult { result } => {
+                match result {
+                    Err(error) => {
+                        error!(message = "search failed", ?error);
                     }
-                };
+                    Ok(response) => {
+                        self.files.clear();
+                        self.files.extend(response.items.iter().map(|item| {
+                            // Do not ask me why this has to be here.
+                            // All I know is it didn't work, and I copied this from `Rc::from` for `From<String>`.
+                            let s = &item.filename[..];
+                            (Rc::from(s), ())
+                        }));
+                    }
+                }
             }
-            Msg::WebSocketOpened => {
-                console::info!("WebSocket connection opened");
-                self.ws_backoff.success();
+            Msg::Play { filename } => {
+                // TODO indicate things in UI somehow, SSE for play status?
+                info!(message = "playing", filename = filename.as_ref());
             }
-            Msg::WebSocketClosed => {
-                self.ws = None;
-
-                // trigger a reconnect, after a delay
-                let delay = self.ws_backoff.delay();
-                console::info!(&format!(
-                    "WebSocket connection closed, retrying in {:?}...",
-                    delay,
-                ));
-                let callback = ctx.link().callback(|_| Msg::ConnectWebSocket);
-
-                use gloo::timers::callback::Timeout;
-                let js_callback = move || {
-                    callback.emit(());
-                };
-                let timeout = Timeout::new(delay.as_millis() as u32, js_callback);
-                timeout.forget();
-            }
-            Msg::ConnectWebSocket => match self.ws {
-                Some(_) => {
-                    console::info!("asked to connect websocket, but it's already connected",);
-                }
-                None => {
-                    let host = {
-                        let window = web_sys::window().expect("must have JS window");
-                        let document = window.document().expect("must have JS document");
-                        let location = document.location().expect("must have JS document.location");
-                        location
-                            .host()
-                            .expect("must have JS document.location.host")
-                    };
-                    let url = format!("ws://{}/ws", host);
-
-                    // let on_open = |_event| {};
-                    let cb_open = ctx.link().callback_once(|_event| Msg::WebSocketOpened);
-                    let on_open = move |event| cb_open.emit(event);
-                    let on_error = |event| {
-                        console::error!(format!("WebSocket closing due to error: {:?}", event));
-                    };
-                    let cb_close = ctx.link().callback_once(|_event| Msg::WebSocketClosed);
-                    let on_close = move |event| cb_close.emit(event);
-                    let cb_message =
-                        ctx.link().callback(|buf: Vec<u8>| {
-                            match serde_json::from_slice::<proto::WSEvent>(&buf) {
-                                Err(error) => Msg::WebSocketJsonParseError(error),
-                                Ok(msg) => Msg::FromServer(msg),
-                            }
-                        });
-                    let on_message = move |event: web_sys::MessageEvent| {
-                        // Do more work here, as `yew::html::Callback` *has to* return a message, and we conveniently ignore unrecognized things.
-                        if let Ok(array_buf) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
-                            let buf = js_sys::Uint8Array::new(&array_buf).to_vec();
-                            cb_message.emit(buf);
-                        } else {
-                            console::error!("unexpected WebSocket message type", event.data());
-                        }
-                    };
-                    let ws = WebSocket::new(&url, on_open, on_error, on_close, on_message).unwrap();
-                    self.ws = Some(ws);
-                }
-            },
-            Msg::Play { filename } => match &self.ws {
-                None => {
-                    console::info!(&format!("asked to play but not connected: {:?}", filename));
-                    ctx.link().send_message(Msg::ConnectWebSocket);
-                }
-                Some(ws) => {
-                    let cmd = proto::WSCommand::Play {
-                        filename: filename.to_string(),
-                    };
-                    match ws.send_json(&cmd) {
-                        Ok(_) => {}
-                        Err(error) => {
-                            console::error!(format!("websocket send: {:?}", error));
-                        }
-                    };
-                }
-            },
         };
         true
     }
 
-    fn changed(&mut self, _ctx: &Context<Self>) -> bool {
-        // Should only return "true" if new properties are different to
-        // previously received properties.
-        // This component has no properties so we will always return "false".
-        false
-    }
-
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let entries = self
-            .files
-            .iter()
-            .filter(|(name, _)| self.search_re.is_match(name))
-            // TODO relax this once the web UI agrees to be responsive enough
-            .take(1000);
-        let oninput = ctx.link().callback(|event: InputEvent| {
+        let entries = self.files.iter();
+        let oninput = ctx.link().callback_future(|event: InputEvent| async move {
             let target = event.target().expect("oninput event must have target");
-            let search = target.unchecked_into::<web_sys::HtmlInputElement>().value();
-            Msg::UpdateSearch { s: search }
+            let search: String = target.unchecked_into::<web_sys::HtmlInputElement>().value();
+            Msg::UpdateSearch {
+                search: Rc::from(search),
+            }
         });
         html! {
             <>
@@ -211,7 +139,30 @@ impl Component for Model {
                 <ul style="padding-right: 10px;">
                   {for entries.map(|(filename, _)| {
                     let tmp = filename.clone();
-                    let callback = ctx.link().callback(move |_| Msg::Play { filename: tmp.clone() });
+                    let callback = ctx.link().callback_future(move |_| {
+                        let tmp = tmp.clone();
+                        async move {
+                            let url = build_play_url();
+                            let cmd = proto::PlayCommand{
+                                filename: tmp.to_string()
+                            };
+                            let buf = serde_json::to_vec(&cmd).expect("JSON serialize of PlayCommand must work");
+                            let arr = js_sys::Uint8Array::from(&buf[..]);
+                            let resp = Request::post(&url)
+                                .header("content-type", "application/json")
+                                .body(arr)
+                                .send().await;
+                            match resp {
+                                Ok(_response) => {
+                                    // TODO status of playback as SSE?
+                                },
+                                Err(error) => {
+                                    error!(message="requesting play failed", ?error);
+                                },
+                            }
+                            Msg::Play { filename: tmp }
+                        }
+                    });
                     html! {
                         <li onclick={callback}>{filename}</li>
                     }
@@ -225,6 +176,7 @@ impl Component for Model {
 #[wasm_bindgen(start)]
 pub fn run_app() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    tracing_wasm::set_as_global_default();
 
     yew::start_app::<Model>();
 }
