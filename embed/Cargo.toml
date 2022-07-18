@@ -8,4 +8,4 @@ edition = "2018"
 [build-dependencies]
 anyhow = "1.0.56"
 cargo_metadata = "0.14.2"
-wasm-bindgen-cli = { version = "0.2.79", features = ["vendored-openssl"] }
+wasm-bindgen-cli = { version = "0.2.81", features = ["vendored-openssl"] }
