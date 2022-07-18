@@ -33,7 +33,7 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            inputs.rust-overlay.overlay
+            inputs.rust-overlay.overlays.default
             rustVersionOverlay
           ];
         };
