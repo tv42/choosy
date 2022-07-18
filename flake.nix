@@ -73,7 +73,6 @@
         apps.choosy = flake-utils.lib.mkApp {
           drv = packages.choosy;
         };
-        defaultApp = apps.choosy;
 
         # `nix develop`
         devShell = pkgs.mkShell {
