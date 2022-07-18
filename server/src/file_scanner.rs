@@ -13,7 +13,7 @@ fn is_interesting(entry: &DirEntry) -> bool {
     matches!(
         // "" will never match anything we're interested in.
         ext.to_str().unwrap_or(""),
-        "mkv" | "mp4" | "avi" | "ogm" | "wmv" | "m4v" | "rmvb" | "flv" | "mov" | "mpg"
+        "mkv" | "mp4" | "avi" | "ogm" | "wmv" | "m4v" | "rmvb" | "flv" | "mov" | "mpg" | "webm"
     )
 }
 
